@@ -17,7 +17,7 @@ async fn test_chat_completions_non_streaming_contract() {
 
     // Valid chat completion request matching OpenAPI spec
     let request_body = json!({
-        "model": "claude-4-sonnet-20250514",
+        "model": "claude-sonnet-4@20250514",
         "messages": [
             {
                 "role": "user",
@@ -63,7 +63,7 @@ async fn test_chat_completions_authentication_required() {
     let server = TestServer::new(app).unwrap();
 
     let request_body = json!({
-        "model": "claude-4-sonnet-20250514",
+        "model": "claude-sonnet-4@20250514",
         "messages": [{"role": "user", "content": "Hello"}]
     });
 
@@ -93,7 +93,7 @@ async fn test_chat_completions_invalid_request() {
 
     // Empty messages array (invalid according to OpenAPI spec)
     let invalid_request = json!({
-        "model": "claude-4-sonnet-20250514",
+        "model": "claude-sonnet-4@20250514",
         "messages": [],
         "temperature": 3.0  // Also invalid - max is 2.0
     });

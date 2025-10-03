@@ -157,7 +157,7 @@ pub mod utils {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::common::MessageRole;
+    use crate::models::common::{MessageRole, FinishReason};
 
     #[test]
     fn test_normalize_role() {

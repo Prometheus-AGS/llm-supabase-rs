@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 mod tests {
-    use super::super::converter::FormatConverter;
+    use crate::infrastructure::vertex::FormatConverter;
     use super::super::types::*;
     use crate::models::{
         request::ChatCompletionRequest,
@@ -18,7 +18,7 @@ mod tests {
 
         // 1. Create OpenAI request (what your API receives)
         let openai_request = ChatCompletionRequest {
-            model: "claude-sonnet-4-5@20250929".to_string(),
+        model: "claude-sonnet-4@20250514".to_string(),
             messages: vec![
                 ChatMessage {
                     role: MessageRole::User,
@@ -79,7 +79,7 @@ mod tests {
                     text: "Hello! This is a test response.".to_string(),
                 },
             ],
-            model: "claude-sonnet-4-5@20250929".to_string(),
+            model: "claude-sonnet-4@20250514".to_string(),
             stop_reason: Some("end_turn".to_string()),
             stop_sequence: None,
             usage: VertexUsage {
@@ -92,14 +92,14 @@ mod tests {
         let openai_response = FormatConverter::vertex_to_openai_v2(
             &vertex_response,
             "chatcmpl-test123",
-            "claude-sonnet-4-5@20250929",
+            "claude-sonnet-4@20250514",
             &openai_request,
         ).expect("Should convert Vertex AI response to OpenAI");
 
         // 6. Validate OpenAI response
         assert_eq!(openai_response.id, "chatcmpl-test123");
         assert_eq!(openai_response.object, "chat.completion");
-        assert_eq!(openai_response.model, "claude-sonnet-4-5@20250929");
+        assert_eq!(openai_response.model, "claude-sonnet-4@20250514");
         assert_eq!(openai_response.choices.len(), 1);
         assert_eq!(openai_response.choices[0].message.content, "Hello! This is a test response.");
         assert_eq!(openai_response.usage.prompt_tokens, 10);
@@ -147,7 +147,7 @@ mod tests {
 
         // Create streaming request
         let openai_request = ChatCompletionRequest {
-            model: "claude-sonnet-4-5@20250929".to_string(),
+            model: "claude-sonnet-4@20250514".to_string(),
             messages: vec![
                 ChatMessage {
                     role: MessageRole::User,
@@ -195,6 +195,10 @@ mod tests {
         // Test streaming chunk conversion
         let vertex_chunk = VertexStreamChunk {
             event_type: "content_block_delta".to_string(),
+            id: Some("chunk_123".to_string()),
+            role: Some("assistant".to_string()),
+            model: Some("claude-sonnet-4@20250514".to_string()),
+            content: None,
             index: Some(0),
             delta: Some(VertexDelta {
                 delta_type: "text_delta".to_string(),
@@ -209,7 +213,7 @@ mod tests {
         let openai_chunk = FormatConverter::vertex_chunk_to_openai_v2(
             &vertex_chunk,
             "chatcmpl-stream123",
-            "claude-sonnet-4-5@20250929",
+            "claude-sonnet-4@20250514",
         ).expect("Should convert chunk").expect("Should have content");
 
         assert_eq!(openai_chunk.id, "chatcmpl-stream123");
@@ -219,6 +223,198 @@ mod tests {
         println!("✅ Streaming chunk conversion: PASSED");
         println!("🎉 Streaming conversion test: SUCCESS!");
     }
+    
+    #[test]
+    fn test_streaming_flag_verification() {
+        println!("🧪 Testing that streaming flag is correctly set...");
+        
+        // Create a non-streaming request
+        let non_streaming_request = ChatCompletionRequest {
+            model: "claude-sonnet-4@20250514".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: MessageRole::User,
+                    content: "Hello".to_string(),
+                    name: None,
+                    function_call: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+            ],
+            max_tokens: Some(100),
+            stream: Some(false), // Explicitly non-streaming
+            temperature: None,
+            top_p: None,
+            n: None,
+            stop: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            logit_bias: None,
+            logprobs: None,
+            top_logprobs: None,
+            user: None,
+            functions: None,
+            function_call: None,
+            tools: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            response_format: None,
+            seed: None,
+            metadata: None,
+            service_tier: None,
+            store: None,
+            stream_options: None,
+        };
+        
+        // Test non-streaming conversion
+        let vertex_non_streaming = FormatConverter::openai_to_vertex_v2(&non_streaming_request)
+            .expect("Should convert non-streaming request");
+            
+        println!("📋 Non-streaming vertex request - stream: {}", vertex_non_streaming.stream);
+        assert_eq!(vertex_non_streaming.stream, false, "Non-streaming request should have stream=false");
+        
+        // Create a streaming request
+        let mut streaming_request = non_streaming_request.clone();
+        streaming_request.stream = Some(true); // Explicitly streaming
+        
+        // Test streaming conversion
+        let vertex_streaming = FormatConverter::openai_to_vertex_streaming(&streaming_request)
+            .expect("Should convert streaming request");
+            
+        println!("📋 Streaming vertex request - stream: {}", vertex_streaming.stream);
+        assert_eq!(vertex_streaming.stream, true, "Streaming request should have stream=true");
+        
+        println!("✅ Streaming flag verification: PASSED");
+        println!("🔍 The streaming flag is correctly set in both cases!");
+    }
+    
+    #[test]
+    fn test_debug_streaming_chunks() {
+        println!("🔍 Debug: Testing all Vertex AI streaming chunk types");
+        
+        // Test various chunk types that might come from Vertex AI
+        let test_chunks = vec![
+            // 1. Content block delta with actual text (most important)
+            VertexStreamChunk {
+                event_type: "content_block_delta".to_string(),
+                id: None,
+                role: None,
+                model: None,
+                content: None,
+                index: Some(0),
+                delta: Some(VertexDelta {
+                    delta_type: "text_delta".to_string(),
+                    text: Some("Hello".to_string()),
+                    stop_reason: None,
+                }),
+                message: None,
+                content_block: None,
+                usage: None,
+            },
+            
+            // 2. Content block delta with more text
+            VertexStreamChunk {
+                event_type: "content_block_delta".to_string(),
+                id: None,
+                role: None,
+                model: None,
+                content: None,
+                index: Some(0),
+                delta: Some(VertexDelta {
+                    delta_type: "text_delta".to_string(),
+                    text: Some(" world!".to_string()),
+                    stop_reason: None,
+                }),
+                message: None,
+                content_block: None,
+                usage: None,
+            },
+            
+            // 3. Message delta with finish reason
+            VertexStreamChunk {
+                event_type: "message_delta".to_string(),
+                id: None,
+                role: None,
+                model: None,
+                content: None,
+                index: None,
+                delta: Some(VertexDelta {
+                    delta_type: "message_delta".to_string(),
+                    text: None,
+                    stop_reason: Some("end_turn".to_string()),
+                }),
+                message: None,
+                content_block: None,
+                usage: None,
+            },
+            
+            // 4. Message stop with usage
+            VertexStreamChunk {
+                event_type: "message_stop".to_string(),
+                id: None,
+                role: None,
+                model: None,
+                content: None,
+                index: None,
+                delta: None,
+                message: None,
+                content_block: None,
+                usage: Some(VertexUsage {
+                    input_tokens: 5,
+                    output_tokens: 2,
+                }),
+            },
+        ];
+        
+        println!("📦 Processing {} test chunks to verify streaming...", test_chunks.len());
+        
+        let mut content_chunks = 0;
+        let mut skipped_chunks = 0;
+        
+        for (i, chunk) in test_chunks.iter().enumerate() {
+            println!("\n🔧 Processing chunk {} - Type: '{}'", i + 1, chunk.event_type);
+            
+            match FormatConverter::vertex_chunk_to_openai_v2(
+                chunk,
+                "debug-test-123",
+                "claude-sonnet-4@20250514"
+            ) {
+                Ok(Some(openai_chunk)) => {
+                    content_chunks += 1;
+                    println!("✅ Chunk converted successfully!");
+                    
+                    if let Some(choice) = openai_chunk.choices.first() {
+                        if !choice.delta.content.is_empty() {
+                            println!("📝 Content: '{}'", choice.delta.content);
+                            println!("🎯 THIS IS THE CONTENT THAT SHOULD STREAM!");
+                        }
+                        if let Some(finish_reason) = &choice.finish_reason {
+                            println!("🏁 Finish reason: {:?}", finish_reason);
+                        }
+                    }
+                },
+                Ok(None) => {
+                    skipped_chunks += 1;
+                    println!("⏭️  Chunk skipped (None returned)");
+                },
+                Err(e) => {
+                    println!("❌ Chunk conversion failed: {}", e);
+                }
+            }
+        }
+        
+        println!("\n📊 STREAMING DEBUG SUMMARY");
+        println!("==========================");
+        println!("✅ Content chunks generated: {}", content_chunks);
+        println!("⏭️  Chunks skipped: {}", skipped_chunks);
+        
+        assert!(content_chunks > 0, "Should generate at least some content chunks!");
+        
+        if content_chunks > 0 {
+            println!("\n🎉 SUCCESS: Streaming chunk conversion is working!");
+            println!("💡 The issue might be with how Vertex AI is responding.");
+        }
+    }
 
     #[test]
     fn test_error_scenarios() {
@@ -226,7 +422,7 @@ mod tests {
 
         // Test with empty messages (should handle gracefully)
         let empty_request = ChatCompletionRequest {
-            model: "claude-sonnet-4-5@20250929".to_string(),
+            model: "claude-sonnet-4@20250514".to_string(),
             messages: vec![],
             max_tokens: Some(100),
             temperature: None,
@@ -269,7 +465,7 @@ mod tests {
 
         // 1. Simulate incoming OpenAI API request
         let incoming_request = r#"{
-            "model": "claude-sonnet-4-5@20250929",
+            "model": "claude-sonnet-4@20250514",
             "messages": [
                 {
                     "role": "system",
@@ -311,7 +507,7 @@ mod tests {
                     "text": "I don't have access to real-time weather data. To get current weather information, I'd recommend checking a weather app or website like Weather.com or your local meteorological service."
                 }
             ],
-            "model": "claude-sonnet-4-5@20250929",
+            "model": "claude-sonnet-4@20250514",
             "stop_reason": "end_turn",
             "usage": {
                 "input_tokens": 25,
@@ -326,7 +522,7 @@ mod tests {
         let openai_response = FormatConverter::vertex_to_openai_v2(
             &vertex_response,
             "chatcmpl-weather123",
-            "claude-sonnet-4-5@20250929",
+            "claude-sonnet-4@20250514",
             &openai_request,
         ).expect("Should convert back to OpenAI format");
 
@@ -338,7 +534,7 @@ mod tests {
 
         // 8. Validate response structure
         assert_eq!(openai_response.object, "chat.completion");
-        assert_eq!(openai_response.model, "claude-sonnet-4-5@20250929");
+        assert_eq!(openai_response.model, "claude-sonnet-4@20250514");
         assert!(!openai_response.choices[0].message.content.is_empty());
         assert_eq!(openai_response.usage.total_tokens, 60);
 

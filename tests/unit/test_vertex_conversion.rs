@@ -19,7 +19,7 @@ use llm_supabase_rs::infrastructure::vertex::{
 fn test_openai_to_vertex_to_openai_conversion() {
     // 1. Create OpenAI-style request (what your API receives)
     let openai_request = ChatCompletionRequest {
-        model: "claude-sonnet-4-5@20250929".to_string(),
+        model: "claude-sonnet-4@20250514".to_string(),
         messages: vec![
             ChatMessage {
                 role: MessageRole::System,
@@ -92,7 +92,7 @@ fn test_openai_to_vertex_to_openai_conversion() {
                 text: "Everything looks like it's working correctly!".to_string(),
             },
         ],
-        model: "claude-sonnet-4-5@20250929".to_string(),
+        model: "claude-sonnet-4@20250514".to_string(),
         stop_reason: Some("end_turn".to_string()),
         stop_sequence: None,
         usage: VertexUsage {

@@ -11,7 +11,7 @@ use llm_supabase_rs::{
     config::providers::VertexAiConfig,
     infrastructure::vertex::{
         VertexAIClient,
-        converter::FormatConverter,
+        FormatConverter,
     },
     models::{
         request::ChatCompletionRequest,

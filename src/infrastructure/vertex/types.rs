@@ -4,6 +4,11 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Helper function to skip serializing stream field when false
+fn should_skip_stream(stream: &bool) -> bool {
+    !stream
+}
+
 /// Vertex AI request for Claude models (Anthropic Messages API format)
 /// This matches the format expected by Vertex AI's Anthropic endpoint
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +43,7 @@ pub struct VertexPredictRequest {
     pub stop_sequences: Option<Vec<String>>,
 
     /// Whether to stream the response (required for streaming endpoint)
+    #[serde(skip_serializing_if = "should_skip_stream")]
     pub stream: bool,
 }
 

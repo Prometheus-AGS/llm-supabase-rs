@@ -18,7 +18,7 @@ async fn test_chat_completions_streaming_contract() {
 
     // Streaming chat completion request
     let request_body = json!({
-        "model": "claude-4-sonnet-20250514",
+        "model": "claude-sonnet-4@20250514",
         "messages": [
             {
                 "role": "user",
@@ -74,7 +74,7 @@ async fn test_streaming_message_types() {
 
     // Test system message + user message
     let request_body = json!({
-        "model": "claude-4-sonnet-20250514",
+        "model": "claude-sonnet-4@20250514",
         "messages": [
             {
                 "role": "system",
@@ -107,7 +107,7 @@ async fn test_streaming_authentication_required() {
     let server = TestServer::new(app).unwrap();
 
     let request_body = json!({
-        "model": "claude-4-sonnet-20250514",
+        "model": "claude-sonnet-4@20250514",
         "messages": [{"role": "user", "content": "Hello"}],
         "stream": true
     });

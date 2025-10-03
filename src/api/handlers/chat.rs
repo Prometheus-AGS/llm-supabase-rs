@@ -254,13 +254,14 @@ pub async fn chat_completions_streaming(
     };
 
     // Start streaming from Vertex AI
+    info!(request_id = %request_id, "Attempting to start streaming from Vertex AI...");
     let mut vertex_stream = match state.vertex_client.predict_streaming(&chat_request.model, vertex_request).await {
         Ok(stream) => {
-            debug!(request_id = %request_id, "Started streaming from Vertex AI");
+            info!(request_id = %request_id, "✅ Started streaming from Vertex AI successfully!");
             stream
         }
         Err(e) => {
-            error!(request_id = %request_id, error = %e, "Failed to start Vertex AI streaming");
+            error!(request_id = %request_id, error = %e, "❌ Failed to start Vertex AI streaming");
             return Err(AppError::vertex_ai(format!("AI streaming error: {}", e)));
         }
     };
@@ -269,7 +270,12 @@ pub async fn chat_completions_streaming(
     let stream = async_stream::stream! {
         use tokio_stream::StreamExt;
         
+        info!(request_id = %request_id, "🌊 Starting to process Vertex AI stream chunks...");
+        let mut chunk_count = 0;
+        
         while let Some(chunk_result) = vertex_stream.next().await {
+            chunk_count += 1;
+            info!(request_id = %request_id, chunk_number = chunk_count, "📦 Received chunk from Vertex AI");
             match chunk_result {
                 Ok(vertex_chunk) => {
                     debug!(request_id = %request_id, event_type = %vertex_chunk.event_type, "Processing Vertex AI chunk");
@@ -345,6 +351,12 @@ pub async fn chat_completions_streaming(
             }
         }
         
+        if chunk_count == 0 {
+            warn!(request_id = %request_id, "⚠️  No chunks received from Vertex AI - this explains the issue!");
+        } else {
+            info!(request_id = %request_id, total_chunks = chunk_count, "✅ Processed all chunks from Vertex AI");
+        }
+        
         // Send final [DONE] message
         yield Ok::<_, axum::Error>("data: [DONE]\n\n".to_string());
         
@@ -352,6 +364,7 @@ pub async fn chat_completions_streaming(
         info!(
             request_id = %request_id,
             duration_ms = duration.as_millis(),
+            total_chunks_processed = chunk_count,
             "Completed streaming chat completion"
         );
     };

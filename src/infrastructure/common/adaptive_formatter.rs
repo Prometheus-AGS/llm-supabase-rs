@@ -591,7 +591,7 @@ mod tests {
     fn test_modern_formatting() {
         let capabilities = create_modern_capabilities();
         let strategy = ToolChoiceStrategy::Auto;
-        let formatter = AdaptiveResponseFormatter::new(capabilities, strategy);
+        let mut formatter = AdaptiveResponseFormatter::new(capabilities, strategy);
         
         let executions = vec![
             create_test_execution(),
@@ -623,7 +623,7 @@ mod tests {
     fn test_tool_choice_none() {
         let capabilities = create_modern_capabilities();
         let strategy = ToolChoiceStrategy::None;
-        let formatter = AdaptiveResponseFormatter::new(capabilities, strategy);
+        let mut formatter = AdaptiveResponseFormatter::new(capabilities, strategy);
         
         let executions = vec![create_test_execution()]; // Should be ignored
         let response = formatter.format_response(
@@ -644,7 +644,7 @@ mod tests {
     fn test_tool_choice_required_validation() {
         let capabilities = create_modern_capabilities();
         let strategy = ToolChoiceStrategy::Required;
-        let formatter = AdaptiveResponseFormatter::new(capabilities, strategy);
+        let mut formatter = AdaptiveResponseFormatter::new(capabilities, strategy);
         
         // Should error when no tools executed
         let result = formatter.format_response(

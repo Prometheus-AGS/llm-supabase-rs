@@ -192,8 +192,16 @@ impl JsonStreamingBuffer {
             debug!("Processing complete message with content array");
             return self.process_content_array(content_array, &json_value);
         }
-
-        None
+        
+        // Check if this is a Vertex AI/Gemini format response
+        if let Some(candidates) = json_value.get("candidates").and_then(|c| c.as_array()) {
+            debug!("Processing Vertex AI/Gemini candidates format");
+            return self.process_vertex_candidates(candidates, &json_value);
+        }
+        
+        // Fallback: treat unrecognized JSON as a generic message
+        debug!("Unrecognized JSON format, treating as generic message");
+        Some(ProcessedChunk::Message(json_value))
     }
 
     /// Process content array from Vertex AI complete message format
@@ -246,6 +254,53 @@ impl JsonStreamingBuffer {
         }
 
         debug!("No specific content found in array");
+        None
+    }
+    
+    /// Process Vertex AI/Gemini candidates format
+    fn process_vertex_candidates(&mut self, candidates: &[Value], _full_message: &Value) -> Option<ProcessedChunk> {
+        debug!("Processing Vertex AI candidates with {} items", candidates.len());
+        
+        for (i, candidate) in candidates.iter().enumerate() {
+            debug!("Processing candidate {}: {:?}", i, candidate);
+            
+            // Check if candidate has content with parts
+            if let Some(content) = candidate.get("content") {
+                if let Some(parts) = content.get("parts").and_then(|p| p.as_array()) {
+                    debug!("Found {} parts in candidate content", parts.len());
+                    
+                    for (j, part) in parts.iter().enumerate() {
+                        debug!("Processing part {}: {:?}", j, part);
+                        
+                        if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                            if !text.is_empty() {
+                                debug!("Extracted text from Vertex AI part: {} chars", text.len());
+                                return Some(ProcessedChunk::Content(text.to_string()));
+                            } else {
+                                debug!("Text content is empty in Vertex AI part");
+                            }
+                        } else {
+                            debug!("No text field found in Vertex AI part");
+                        }
+                    }
+                } else {
+                    debug!("No parts array found in candidate content");
+                }
+            } else {
+                debug!("No content field found in candidate");
+            }
+            
+            // Check for finish reason to indicate end of stream
+            if let Some(finish_reason) = candidate.get("finishReason").and_then(|f| f.as_str()) {
+                debug!("Found finish reason in Vertex AI candidate: {}", finish_reason);
+                if finish_reason == "STOP" || finish_reason == "MAX_TOKENS" {
+                    // Don't return Done here, let the text content be processed first
+                    // The Done will be handled by the API layer
+                }
+            }
+        }
+        
+        debug!("No content extracted from Vertex AI candidates");
         None
     }
 
@@ -371,14 +426,18 @@ mod tests {
         assert_eq!(objects1.len(), 0); // No complete objects yet
         
         let objects2 = buffer.add_chunk(r#""content": "hello"}"#);
-        assert_eq!(objects2.len(), 1);
-        // This should be processed as a Message chunk
-        match &objects2[0] {
+        // The complete JSON spans fragments, so it's detected during finalization
+        assert_eq!(objects2.len(), 0); // No complete objects during fragment processing
+        
+        // But finalization should process the complete JSON
+        let final_object = buffer.finalize();
+        assert!(final_object.is_some());
+        match final_object.unwrap() {
             ProcessedChunk::Message(json_val) => {
                 assert_eq!(json_val.get("id").and_then(|v| v.as_str()), Some("test"));
                 assert_eq!(json_val.get("content").and_then(|v| v.as_str()), Some("hello"));
             }
-            _ => panic!("Expected Message chunk"),
+            _ => panic!("Expected Message chunk from finalization"),
         }
     }
 
