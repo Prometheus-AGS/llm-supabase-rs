@@ -1,0 +1,68 @@
+# Rust build artifacts
+target/
+Cargo.lock
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Test files
+tests/
+examples/
+
+# Environment files (except example)
+.env
+.env.local
+.env.production
+!.env.example
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+tmp/
+temp/
+
+# Node modules (if any)
+node_modules/
+
+# Python cache (if any)
+__pycache__/
+*.pyc
+
+# Credentials (security)
+*.json
+!package*.json
+gcp-credentials.json
+credentials/
+
+# Docker files (not needed in container)
+Dockerfile*
+docker-compose*.yml
+docker-compose*.yaml
+.dockerignore
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Other
+.specify/
+.claude/

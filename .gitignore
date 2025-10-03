@@ -1,0 +1,39 @@
+# Rust
+/target
+Cargo.lock
+*.pdb
+
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+gcp-credentials.json
+service-account.json
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+coverage/
+.nyc_output
+
+# Database
+*.db
+*.sqlite
+
+# Temporary
+tmp/
+temp/

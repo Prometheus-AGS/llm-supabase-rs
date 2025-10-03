@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./.specify/scripts/bash/create-new-feature.sh:*)",
+      "Bash(./.specify/scripts/bash/setup-plan.sh:*)",
+      "Bash(./.specify/scripts/bash/check-prerequisites.sh:*)",
+      "Bash(./.specify/scripts/bash/update-agent-context.sh:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo test:*)",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__get-library-docs",
+      "Bash(cargo:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
