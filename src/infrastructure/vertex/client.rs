@@ -174,7 +174,7 @@ impl VertexAIClient {
                                 let _ = tx.send(Ok(final_chunk)).await;
                                 break;
                             }
-                            data
+                            data.to_string()
                         } else if chunk_str.contains("event: ") && chunk_str.contains("data: ") {
                             // Handle multi-line SSE events (event: + data: format)
                             let lines: Vec<&str> = chunk_str.lines().collect();
@@ -192,13 +192,31 @@ impl VertexAIClient {
                             // Only process events that contain tool_use or other important content
                             if event_type == "content_block_start" || event_type == "content_block_delta" || event_type == "message_delta" {
                                 debug!("Processing SSE event: {} with data: {}", event_type, data_content);
-                                data_content
+                                
+                                // Wrap the data with the event type so the buffer can recognize it
+                                if !data_content.is_empty() {
+                                    // Parse the data as JSON and add the type field
+                                    if let Ok(mut data_json) = serde_json::from_str::<Value>(data_content) {
+                                        if let Some(obj) = data_json.as_object_mut() {
+                                            // Add the event type to the JSON object
+                                            obj.insert("type".to_string(), Value::String(event_type.to_string()));
+                                            // Return the enhanced JSON as a string
+                                            serde_json::to_string(&data_json).unwrap_or_else(|_| data_content.to_string())
+                                        } else {
+                                            data_content.to_string()
+                                        }
+                                    } else {
+                                        data_content.to_string()
+                                    }
+                                } else {
+                                    continue;
+                                }
                             } else {
                                 debug!("Skipping SSE event: {}", event_type);
                                 continue;
                             }
                         } else if chunk_str.trim().starts_with("{") {
-                            &chunk_str
+                            chunk_str.to_string()
                         } else if chunk_str.trim().is_empty() {
                             // Skip empty chunks
                             continue;
@@ -208,7 +226,7 @@ impl VertexAIClient {
                         };
                         
                         // Add to buffer and get complete processed chunks
-                        let processed_chunks = json_buffer.add_chunk(clean_chunk);
+                        let processed_chunks = json_buffer.add_chunk(&clean_chunk);
                         
                         // Process each chunk
                         for processed_chunk in processed_chunks {
@@ -256,20 +274,7 @@ impl VertexAIClient {
                                 // Other chunk types (simplified for this fix)
                                 _ => {
                                     debug!("Converting other chunk type: {:?}", processed_chunk);
-                                    Some(VertexStreamChunk {
-                                        event_type: "content_block_delta".to_string(),
-                                        id: None,
-                                        role: None,
-                                        model: None,
-                                        content: Some(vec![VertexContent::Text {
-                                            text: "[processed_chunk]".to_string(), // Placeholder for non-serializable chunk
-                                        }]),
-                                        index: None,
-                                        delta: None,
-                                        message: None,
-                                        content_block: None,
-                                        usage: None,
-                                    })
+                                    None // Skip generic chunks that don't need streaming
                                 }
                             };
                             
@@ -385,7 +390,7 @@ impl VertexAIClient {
                         model
                             .get("name")
                             .and_then(|name| name.as_str())
-                            .and_then(|name| name.split('/').last())
+                            .and_then(|name| name.split('/').next_back())
                             .map(|s| s.to_string())
                     })
                     .collect()

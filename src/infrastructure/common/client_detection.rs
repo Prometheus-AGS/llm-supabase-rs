@@ -102,6 +102,12 @@ impl Default for ClientCapabilities {
     }
 }
 
+impl Default for ClientCapabilityDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ClientCapabilityDetector {
     /// Create a new client detector with known patterns
     pub fn new() -> Self {

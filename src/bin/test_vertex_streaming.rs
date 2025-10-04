@@ -16,7 +16,7 @@ async fn main() -> Result<()> {
     
     // Get access token
     let output = std::process::Command::new("gcloud")
-        .args(&["auth", "print-access-token"])
+        .args(["auth", "print-access-token"])
         .output()?;
     let access_token = String::from_utf8(output.stdout)?.trim().to_string();
     

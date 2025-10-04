@@ -48,6 +48,12 @@ pub struct JsonStreamingBuffer {
     tool_call_buffer: String,
 }
 
+impl Default for JsonStreamingBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl JsonStreamingBuffer {
     /// Create a new streaming buffer
     pub fn new() -> Self {

@@ -302,7 +302,7 @@ pub mod utils {
     pub fn extract_tool_calls_from_stream_chunk(chunk: &Value) -> Option<Vec<UnifiedToolCall>> {
         // Check for OpenAI format tool calls in streaming
         if let Some(choices) = chunk.get("choices").and_then(|c| c.as_array()) {
-            if let Some(choice) = choices.get(0) {
+            if let Some(choice) = choices.first() {
                 if let Some(delta) = choice.get("delta") {
                     if let Some(_tool_calls) = delta.get("tool_calls") {
                         // Handle incremental tool call building in streaming
@@ -328,7 +328,7 @@ pub mod utils {
     pub fn is_tool_calls_complete(chunk: &Value) -> bool {
         // OpenAI: check if finish_reason is "tool_calls"
         if let Some(choices) = chunk.get("choices").and_then(|c| c.as_array()) {
-            if let Some(choice) = choices.get(0) {
+            if let Some(choice) = choices.first() {
                 if let Some(finish_reason) = choice.get("finish_reason").and_then(|f| f.as_str()) {
                     return finish_reason == "tool_calls";
                 }

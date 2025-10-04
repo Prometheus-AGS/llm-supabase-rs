@@ -32,7 +32,7 @@ impl AIProvider {
     }
 
     /// Parse provider from string
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "vertex_ai" | "vertex" | "gcp" => Some(AIProvider::VertexAI),
             "bedrock" | "aws" => Some(AIProvider::Bedrock),
@@ -242,12 +242,12 @@ mod tests {
 
     #[test]
     fn test_provider_from_string() {
-        assert_eq!(AIProvider::from_str("vertex_ai"), Some(AIProvider::VertexAI));
-        assert_eq!(AIProvider::from_str("VERTEX"), Some(AIProvider::VertexAI));
-        assert_eq!(AIProvider::from_str("gcp"), Some(AIProvider::VertexAI));
-        assert_eq!(AIProvider::from_str("bedrock"), Some(AIProvider::Bedrock));
-        assert_eq!(AIProvider::from_str("aws"), Some(AIProvider::Bedrock));
-        assert_eq!(AIProvider::from_str("invalid"), None);
+        assert_eq!(AIProvider::parse("vertex_ai"), Some(AIProvider::VertexAI));
+        assert_eq!(AIProvider::parse("VERTEX"), Some(AIProvider::VertexAI));
+        assert_eq!(AIProvider::parse("gcp"), Some(AIProvider::VertexAI));
+        assert_eq!(AIProvider::parse("bedrock"), Some(AIProvider::Bedrock));
+        assert_eq!(AIProvider::parse("aws"), Some(AIProvider::Bedrock));
+        assert_eq!(AIProvider::parse("invalid"), None);
     }
 
     #[test]

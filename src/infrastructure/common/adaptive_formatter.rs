@@ -66,6 +66,12 @@ pub struct AdaptiveResponseFormatter {
     tool_queue: ToolCallQueue,
 }
 
+impl Default for ToolCallQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolCallQueue {
     pub fn new() -> Self {
         Self {
@@ -113,7 +119,7 @@ impl ToolCallQueue {
 
     /// Check if there are pending calls for a conversation
     pub fn has_pending_calls(&self, conversation_id: &str) -> bool {
-        self.pending_calls.get(conversation_id).map_or(false, |q| !q.is_empty())
+        self.pending_calls.get(conversation_id).is_some_and(|q| !q.is_empty())
     }
 }
 

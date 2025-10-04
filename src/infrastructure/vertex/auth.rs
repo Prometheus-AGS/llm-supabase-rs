@@ -234,11 +234,7 @@ impl AuthContext {
             .unwrap()
             .as_secs();
 
-        if self.expires_at > now {
-            self.expires_at - now
-        } else {
-            0
-        }
+        self.expires_at.saturating_sub(now)
     }
 }
 

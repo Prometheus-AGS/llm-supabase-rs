@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use tracing::{warn, debug};
+use tracing::debug;
 
 use crate::infrastructure::common::{
     ProviderConverter, ProviderErrorHandler,
@@ -30,6 +30,12 @@ pub struct VertexAIConverter {
     /// Tool call manager for handling Claude-style tool calls
     #[allow(dead_code)]
     tool_manager: ToolCallManager,
+}
+
+impl Default for VertexAIConverter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl VertexAIConverter {
@@ -225,7 +231,7 @@ impl VertexAIConverter {
     fn convert_tool_uses_to_openai(&self, tool_uses: &[&VertexContent]) -> Result<Vec<serde_json::Value>> {
         let mut tool_calls = Vec::new();
         
-        for (index, tool_use) in tool_uses.iter().enumerate() {
+        for tool_use in tool_uses.iter() {
             if let VertexContent::ToolUse { id, name, input } = tool_use {
                 let tool_call = serde_json::json!({
                     "id": id,
@@ -244,30 +250,24 @@ impl VertexAIConverter {
 
     /// Convert first tool use to legacy function_call format
     fn convert_first_tool_use_to_function_call(&self, tool_uses: &[&VertexContent]) -> Result<Option<serde_json::Value>> {
-        if let Some(tool_use) = tool_uses.first() {
-            if let VertexContent::ToolUse { name, input, .. } = tool_use {
-                let function_call = serde_json::json!({
-                    "name": name,
-                    "arguments": serde_json::to_string(input)?
-                });
-                return Ok(Some(function_call));
-            }
+        if let Some(VertexContent::ToolUse { name, input, .. }) = tool_uses.first() {
+            let function_call = serde_json::json!({
+                "name": name,
+                "arguments": serde_json::to_string(input)?
+            });
+            return Ok(Some(function_call));
         }
         Ok(None)
     }
 
     /// Check if tools should be disabled based on tool_choice
     fn should_disable_tools(&self, request: &ChatCompletionRequest) -> bool {
-        if let Some(tool_choice) = &request.tool_choice {
-            if let serde_json::Value::String(s) = tool_choice {
-                return s == "none";
-            }
+        if let Some(serde_json::Value::String(s)) = &request.tool_choice {
+            return s == "none";
         }
         
-        if let Some(function_call) = &request.function_call {
-            if let serde_json::Value::String(s) = function_call {
-                return s == "none";
-            }
+        if let Some(serde_json::Value::String(s)) = &request.function_call {
+            return s == "none";
         }
         
         false

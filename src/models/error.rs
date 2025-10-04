@@ -173,7 +173,6 @@ impl ErrorResponse {
     }
 
     /// Model-specific errors
-
     /// Unsupported model error
     pub fn unsupported_model<S: Into<String>>(model: S) -> Self {
         Self::invalid_request_param(

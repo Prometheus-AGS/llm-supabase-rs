@@ -296,7 +296,7 @@ pub async fn chat_completions_streaming(
                             
                             // Check for tool calls in the chunk
                             if let Some(ref mut tool_mgr) = tool_manager {
-                                if let Some(choice) = openai_chunk.choices.get(0) {
+                                if let Some(choice) = openai_chunk.choices.first() {
                                     // Check if this chunk contains tool calls
                                     if let Some(tool_calls) = &choice.delta.tool_calls {
                                         debug!(request_id = %request_id, tool_calls_count = tool_calls.len(), "Tool calls detected in streaming chunk");
@@ -435,7 +435,7 @@ fn validate_chat_request(request: &ChatCompletionRequest, request_id: &str) -> R
     }
 
     if let Some(temperature) = request.temperature {
-        if temperature < 0.0 || temperature > 2.0 {
+        if !(0.0..=2.0).contains(&temperature) {
             warn!(request_id = %request_id, temperature = temperature, "Invalid temperature");
             return Err(AppError::validation("temperature must be between 0.0 and 2.0"));
         }

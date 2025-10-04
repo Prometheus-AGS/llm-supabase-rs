@@ -227,14 +227,14 @@ impl ChatCompletionRequest {
 
         // Temperature validation (0 to 2.0)
         if let Some(temperature) = self.temperature {
-            if temperature < 0.0 || temperature > 2.0 {
+            if !(0.0..=2.0).contains(&temperature) {
                 return Err("temperature must be between 0.0 and 2.0".to_string());
             }
         }
 
         // Top_p validation (0 to 1.0)
         if let Some(top_p) = self.top_p {
-            if top_p < 0.0 || top_p > 1.0 {
+            if !(0.0..=1.0).contains(&top_p) {
                 return Err("top_p must be between 0.0 and 1.0".to_string());
             }
         }
@@ -248,14 +248,14 @@ impl ChatCompletionRequest {
 
         // Presence penalty validation (-2.0 to 2.0)
         if let Some(penalty) = self.presence_penalty {
-            if penalty < -2.0 || penalty > 2.0 {
+            if !(-2.0..=2.0).contains(&penalty) {
                 return Err("presence_penalty must be between -2.0 and 2.0".to_string());
             }
         }
 
         // Frequency penalty validation (-2.0 to 2.0)
         if let Some(penalty) = self.frequency_penalty {
-            if penalty < -2.0 || penalty > 2.0 {
+            if !(-2.0..=2.0).contains(&penalty) {
                 return Err("frequency_penalty must be between -2.0 and 2.0".to_string());
             }
         }

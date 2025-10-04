@@ -89,7 +89,7 @@ impl SupabaseClient {
         use_service_role: bool,
     ) -> Result<serde_json::Value> {
         let response = self.client
-            .post(&self.rest_url(table))
+            .post(self.rest_url(table))
             .header("apikey", &self.anon_key)
             .header("Authorization", self.auth_header(use_service_role))
             .header("Content-Type", "application/json")

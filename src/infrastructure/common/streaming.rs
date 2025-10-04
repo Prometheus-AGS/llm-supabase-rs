@@ -220,7 +220,7 @@ fn extract_text_from_json(json: &Value) -> Option<String> {
         .or_else(|| json.get("message").and_then(|m| m.get("content")))
         .or_else(|| json.get("choices")
             .and_then(|c| c.as_array())
-            .and_then(|arr| arr.get(0))
+            .and_then(|arr| arr.first())
             .and_then(|first| first.get("text")))
         .or_else(|| json.get("content_block").and_then(|cb| cb.get("text")))
         .and_then(|t| t.as_str())

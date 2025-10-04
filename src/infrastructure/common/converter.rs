@@ -147,7 +147,7 @@ pub mod utils {
             .or_else(|| json.get("message").and_then(|m| m.get("content")))
             .or_else(|| json.get("choices")
                 .and_then(|c| c.as_array())
-                .and_then(|arr| arr.get(0))
+                .and_then(|arr| arr.first())
                 .and_then(|first| first.get("text")))
             .and_then(|t| t.as_str())
             .map(|s| s.to_string())

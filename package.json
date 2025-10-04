@@ -6,6 +6,7 @@
   "scripts": {
     "test": "tsx test-tool-calling.ts",
     "test:tools": "tsx test-tool-calling.ts",
+    "test:e2e": "tsx test-tool-calling-e2e.ts",
     "test:watch": "tsx watch test-tool-calling.ts",
     "diagnose": "tsx diagnose-connection.ts",
     "build": "tsc --noEmit",

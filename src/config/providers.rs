@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Configuration for AI service providers
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProvidersConfig {
     /// Vertex AI provider configuration
     pub vertex_ai: VertexAiConfig,
@@ -304,15 +304,6 @@ pub struct GlobalProviderConfig {
     pub log_requests: bool,
 }
 
-impl Default for ProvidersConfig {
-    fn default() -> Self {
-        Self {
-            vertex_ai: VertexAiConfig::default(),
-            routing: ProviderRoutingConfig::default(),
-            global: GlobalProviderConfig::default(),
-        }
-    }
-}
 
 impl Default for VertexAiConfig {
     fn default() -> Self {
@@ -479,7 +470,7 @@ impl ProvidersConfig {
     /// Get model configuration for a specific model
     pub fn get_model_config(&self, model_name: &str) -> Option<&VertexModelConfig> {
         self.vertex_ai.models.get(model_name)
-            .or_else(|| Some(&self.vertex_ai.default_model))
+            .or(Some(&self.vertex_ai.default_model))
     }
 
     /// Get the provider name for a specific model
