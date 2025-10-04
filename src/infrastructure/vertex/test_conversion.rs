@@ -74,8 +74,7 @@ mod tests {
             response_type: "message".to_string(),
             role: "assistant".to_string(),
             content: vec![
-                VertexContent {
-                    content_type: "text".to_string(),
+                VertexContent::Text {
                     text: "Hello! This is a test response.".to_string(),
                 },
             ],

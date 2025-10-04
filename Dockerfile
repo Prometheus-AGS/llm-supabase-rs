@@ -2,7 +2,7 @@
 # Using Debian base to avoid SSL certificate issues
 
 # Build stage
-FROM rust:1.90-bookworm as builder
+FROM rust:1.90-bookworm AS builder
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -27,8 +27,9 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs
 # This will generate Cargo.lock if it doesn't exist
 RUN cargo build --release && rm -rf src
 
-# Copy source code
+# Copy source code and configuration files
 COPY src ./src
+COPY .env.example ./
 
 # Build the application
 RUN cargo build --release

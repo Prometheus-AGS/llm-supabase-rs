@@ -164,9 +164,26 @@ impl JsonStreamingBuffer {
                     if let Some(content_block) = json_value.get("content_block") {
                         if content_block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
                             debug!("Detected tool_use block start");
-                            self.building_tool_call = true;
-                            self.tool_call_buffer = json_str.to_string();
-                            return None; // Don't emit yet, wait for complete tool call
+                            
+                            // Check if tool call is complete in this event
+                            if let (Some(id), Some(name), Some(input)) = (
+                                content_block.get("id").and_then(|i| i.as_str()),
+                                content_block.get("name").and_then(|n| n.as_str()),
+                                content_block.get("input")
+                            ) {
+                                debug!("Tool call is complete in content_block_start: {} ({})", name, id);
+                                return Some(ProcessedChunk::ToolUse {
+                                    id: id.to_string(),
+                                    name: name.to_string(),
+                                    input: input.clone(),
+                                });
+                            } else {
+                                // Tool call is incomplete, wait for more chunks
+                                debug!("Tool call is incomplete, waiting for more chunks");
+                                self.building_tool_call = true;
+                                self.tool_call_buffer = json_str.to_string();
+                                return None;
+                            }
                         }
                     }
                 }

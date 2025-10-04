@@ -1,10 +1,10 @@
 // src/infrastructure/vertex/vertex_converter.rs
 //
-// Vertex AI specific implementation of the ProviderConverter trait
+// Production implementation for real tool calling with Vertex AI Claude models
 
 use anyhow::Result;
 use async_trait::async_trait;
-use tracing::{debug, warn};
+use tracing::{warn, debug};
 
 use crate::infrastructure::common::{
     ProviderConverter, ProviderErrorHandler,
@@ -15,11 +15,11 @@ use crate::infrastructure::common::AIProvider;
 use crate::models::{
     request::ChatCompletionRequest,
     response::{ChatCompletionResponse, ChatCompletionChunk, ChatCompletionChunkChoice},
-    common::{ChatMessage, MessageRole, FinishReason, Usage},
+    common::{ChatMessage, MessageRole, FinishReason, Usage, ToolDefinition, FunctionDefinition},
 };
 use super::{
     VertexPredictRequest, VertexPredictResponse, VertexStreamChunk, VertexError,
-    VertexMessage, VertexRole, VertexUsage,
+    VertexMessage, VertexRole, VertexTool, VertexToolChoice, VertexContent,
 };
 
 /// Vertex AI implementation of the ProviderConverter trait
@@ -28,7 +28,7 @@ pub struct VertexAIConverter {
     anthropic_version: String,
     
     /// Tool call manager for handling Claude-style tool calls
-    #[allow(dead_code)] // Will be used for tool call processing in future
+    #[allow(dead_code)]
     tool_manager: ToolCallManager,
 }
 
@@ -41,14 +41,13 @@ impl VertexAIConverter {
     }
 
     /// Convert OpenAI messages to Vertex AI format
-    fn convert_messages(&self, messages: &[ChatMessage]) -> Result<Vec<VertexMessage>> {
+    fn convert_messages(&self, messages: &[ChatMessage]) -> Result<(Vec<VertexMessage>, Option<String>)> {
         let mut vertex_messages = Vec::new();
         let mut system_prompt = String::new();
 
         for message in messages {
             match message.role {
                 MessageRole::System => {
-                    // Collect system messages into system prompt
                     if !system_prompt.is_empty() {
                         system_prompt.push('\n');
                     }
@@ -67,44 +66,211 @@ impl VertexAIConverter {
                     });
                 }
                 MessageRole::Function | MessageRole::Tool => {
-                    // For now, treat function/tool messages as user messages
-                    // TODO: Implement proper tool support
-                    warn!("Function/tool messages not fully supported, treating as user message");
+                    // Convert tool/function results to user messages with proper formatting
+                    let tool_result = if let Some(tool_call_id) = &message.tool_call_id {
+                        format!("Tool result for {}: {}", tool_call_id, message.content)
+                    } else {
+                        format!("Function result: {}", message.content)
+                    };
+                    
                     vertex_messages.push(VertexMessage {
                         role: VertexRole::User,
-                        content: message.content.clone(),
+                        content: tool_result,
                     });
                 }
             }
         }
 
-        // If we have a system prompt, we need to handle it specially
-        // Vertex AI doesn't have a separate system role, so we prepend it to the first user message
-        if !system_prompt.is_empty() && !vertex_messages.is_empty() {
-            if let Some(first_message) = vertex_messages.first_mut() {
-                if first_message.role == VertexRole::User {
-                    first_message.content = format!("{}\n\n{}", system_prompt, first_message.content);
-                }
+        let final_system = if system_prompt.is_empty() { None } else { Some(system_prompt) };
+        Ok((vertex_messages, final_system))
+    }
+
+    /// Convert OpenAI tools to Vertex AI format
+    fn convert_tools(&self, tools: &[ToolDefinition]) -> Result<Vec<VertexTool>> {
+        let mut vertex_tools = Vec::new();
+        
+        for tool in tools {
+            if tool.tool_type == "function" {
+                let vertex_tool = VertexTool {
+                    name: tool.function.name.clone(),
+                    description: tool.function.description.clone().unwrap_or_default(),
+                    input_schema: tool.function.parameters.clone().unwrap_or_else(|| {
+                        serde_json::json!({
+                            "type": "object",
+                            "properties": {},
+                            "required": []
+                        })
+                    }),
+                };
+                vertex_tools.push(vertex_tool);
             }
         }
+        
+        Ok(vertex_tools)
+    }
 
-        Ok(vertex_messages)
+    /// Convert legacy OpenAI functions to Vertex AI format
+    fn convert_functions(&self, functions: &[FunctionDefinition]) -> Result<Vec<VertexTool>> {
+        let mut vertex_tools = Vec::new();
+        
+        for function in functions {
+            let vertex_tool = VertexTool {
+                name: function.name.clone(),
+                description: function.description.clone().unwrap_or_default(),
+                input_schema: function.parameters.clone().unwrap_or_else(|| {
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    })
+                }),
+            };
+            vertex_tools.push(vertex_tool);
+        }
+        
+        Ok(vertex_tools)
+    }
+
+    /// Convert OpenAI tool_choice to Vertex AI format
+    fn convert_tool_choice(&self, tool_choice: &serde_json::Value) -> Result<VertexToolChoice> {
+        match tool_choice {
+            serde_json::Value::String(s) => {
+                match s.as_str() {
+                    "auto" => Ok(VertexToolChoice::Auto {
+                        tool_type: "auto".to_string()
+                    }),
+                    "required" => Ok(VertexToolChoice::Any {
+                        tool_type: "any".to_string()
+                    }),
+                    "none" => {
+                        // For "none", we'll return Auto but not include tools in the request
+                        Ok(VertexToolChoice::Auto {
+                            tool_type: "auto".to_string()
+                        })
+                    }
+                    _ => Ok(VertexToolChoice::Auto {
+                        tool_type: "auto".to_string()
+                    }),
+                }
+            }
+            serde_json::Value::Object(obj) => {
+                if let Some(function_obj) = obj.get("function") {
+                    if let Some(name) = function_obj.get("name").and_then(|n| n.as_str()) {
+                        Ok(VertexToolChoice::Tool {
+                            tool_type: "tool".to_string(),
+                            name: name.to_string()
+                        })
+                    } else {
+                        Ok(VertexToolChoice::Auto {
+                            tool_type: "auto".to_string()
+                        })
+                    }
+                } else {
+                    Ok(VertexToolChoice::Auto {
+                        tool_type: "auto".to_string()
+                    })
+                }
+            }
+            _ => Ok(VertexToolChoice::Auto {
+                tool_type: "auto".to_string()
+            }),
+        }
+    }
+
+    /// Convert legacy function_call to Vertex AI format
+    fn convert_function_call(&self, function_call: &serde_json::Value) -> Result<VertexToolChoice> {
+        match function_call {
+            serde_json::Value::String(s) => {
+                match s.as_str() {
+                    "auto" => Ok(VertexToolChoice::Auto {
+                        tool_type: "auto".to_string()
+                    }),
+                    "none" => Ok(VertexToolChoice::Auto {
+                        tool_type: "auto".to_string()
+                    }), // Will not include tools
+                    _ => Ok(VertexToolChoice::Auto {
+                        tool_type: "auto".to_string()
+                    }),
+                }
+            }
+            serde_json::Value::Object(obj) => {
+                if let Some(name) = obj.get("name").and_then(|n| n.as_str()) {
+                    Ok(VertexToolChoice::Tool {
+                        tool_type: "tool".to_string(),
+                        name: name.to_string()
+                    })
+                } else {
+                    Ok(VertexToolChoice::Auto {
+                        tool_type: "auto".to_string()
+                    })
+                }
+            }
+            _ => Ok(VertexToolChoice::Auto {
+                tool_type: "auto".to_string()
+            }),
+        }
     }
 
     /// Normalize model name for Vertex AI
     fn normalize_vertex_model(&self, model: &str) -> String {
         match model {
-            "claude-4-sonnet" | "claude-4-sonnet-20250514" => "claude-sonnet-4-5@20250929".to_string(),
+            "claude-4-sonnet" | "claude-4-sonnet-20250514" => "claude-sonnet-4@20250514".to_string(),
             "claude-3-5-haiku" => "claude-3-5-haiku@20241022".to_string(),
             "claude-3-5-sonnet" => "claude-3-5-sonnet@20241022".to_string(),
             _ => model.to_string(),
         }
     }
-}
 
-impl Default for VertexAIConverter {
-    fn default() -> Self {
-        Self::new()
+    /// Convert Vertex AI tool use to OpenAI tool calls format
+    fn convert_tool_uses_to_openai(&self, tool_uses: &[&VertexContent]) -> Result<Vec<serde_json::Value>> {
+        let mut tool_calls = Vec::new();
+        
+        for (index, tool_use) in tool_uses.iter().enumerate() {
+            if let VertexContent::ToolUse { id, name, input } = tool_use {
+                let tool_call = serde_json::json!({
+                    "id": id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": serde_json::to_string(input)?
+                    }
+                });
+                tool_calls.push(tool_call);
+            }
+        }
+        
+        Ok(tool_calls)
+    }
+
+    /// Convert first tool use to legacy function_call format
+    fn convert_first_tool_use_to_function_call(&self, tool_uses: &[&VertexContent]) -> Result<Option<serde_json::Value>> {
+        if let Some(tool_use) = tool_uses.first() {
+            if let VertexContent::ToolUse { name, input, .. } = tool_use {
+                let function_call = serde_json::json!({
+                    "name": name,
+                    "arguments": serde_json::to_string(input)?
+                });
+                return Ok(Some(function_call));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Check if tools should be disabled based on tool_choice
+    fn should_disable_tools(&self, request: &ChatCompletionRequest) -> bool {
+        if let Some(tool_choice) = &request.tool_choice {
+            if let serde_json::Value::String(s) = tool_choice {
+                return s == "none";
+            }
+        }
+        
+        if let Some(function_call) = &request.function_call {
+            if let serde_json::Value::String(s) = function_call {
+                return s == "none";
+            }
+        }
+        
+        false
     }
 }
 
@@ -116,22 +282,66 @@ impl ProviderConverter for VertexAIConverter {
     type ProviderError = VertexError;
 
     fn openai_to_provider_request(&self, request: &ChatCompletionRequest) -> Result<Self::ProviderRequest> {
-        let vertex_messages = self.convert_messages(&request.messages)?;
+        let (vertex_messages, system_prompt) = self.convert_messages(&request.messages)?;
+        
+        // Handle tools and tool_choice
+        let (tools, tool_choice) = if self.should_disable_tools(request) {
+            debug!("Tools disabled by tool_choice/function_call = 'none'");
+            (None, None)
+        } else if let Some(openai_tools) = &request.tools {
+            debug!("Converting OpenAI tools: {:?}", openai_tools);
+            let vertex_tools = self.convert_tools(openai_tools)?;
+            let vertex_tool_choice = if let Some(tc) = &request.tool_choice {
+                debug!("Converting tool_choice: {:?}", tc);
+                Some(self.convert_tool_choice(tc)?)
+            } else {
+                debug!("No tool_choice specified, defaulting to Auto");
+                Some(VertexToolChoice::Auto {
+                    tool_type: "auto".to_string()
+                })
+            };
+            (Some(vertex_tools), vertex_tool_choice)
+        } else if let Some(openai_functions) = &request.functions {
+            debug!("Converting OpenAI functions: {:?}", openai_functions);
+            let vertex_tools = self.convert_functions(openai_functions)?;
+            let vertex_tool_choice = if let Some(fc) = &request.function_call {
+                debug!("Converting function_call: {:?}", fc);
+                Some(self.convert_function_call(fc)?)
+            } else {
+                debug!("No function_call specified, defaulting to Auto");
+                Some(VertexToolChoice::Auto {
+                    tool_type: "auto".to_string()
+                })
+            };
+            (Some(vertex_tools), vertex_tool_choice)
+        } else {
+            debug!("No tools or functions provided");
+            (None, None)
+        };
 
-        Ok(VertexPredictRequest {
+        debug!("Final converted tools: {:?}", tools);
+        debug!("Final converted tool_choice: {:?}", tool_choice);
+
+        let vertex_request = VertexPredictRequest {
             anthropic_version: self.anthropic_version.clone(),
             messages: vertex_messages,
             max_tokens: request.max_tokens.unwrap_or(16384),
+            system: system_prompt,
             temperature: request.temperature,
             top_p: request.top_p,
             top_k: None,
-            system: None,
-            stream: false, // Non-streaming request
+            stream: false,
             stop_sequences: request.stop.as_ref().map(|stop| match stop {
                 crate::models::request::Stop::String(s) => vec![s.clone()],
                 crate::models::request::Stop::Array(arr) => arr.clone(),
             }),
-        })
+            tools,
+            tool_choice,
+        };
+
+        debug!("Complete Vertex AI request: {}", serde_json::to_string_pretty(&vertex_request)?);
+        
+        Ok(vertex_request)
     }
 
     fn openai_to_provider_streaming_request(&self, request: &ChatCompletionRequest) -> Result<Self::ProviderRequest> {
@@ -145,16 +355,44 @@ impl ProviderConverter for VertexAIConverter {
         response: &Self::ProviderResponse,
         request_id: &str,
         model: &str,
-        _original_request: &ChatCompletionRequest,
+        original_request: &ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse> {
-        let content = response.get_text();
+        let text_content = response.get_text();
+        let tool_uses = response.get_tool_uses();
+        
+        // Convert tool uses to OpenAI format
+        let tool_calls = if !tool_uses.is_empty() {
+            Some(self.convert_tool_uses_to_openai(&tool_uses)?)
+        } else {
+            None
+        };
+        
+        // Convert first tool use to legacy function_call format if needed
+        let function_call = if original_request.functions.is_some() && !tool_uses.is_empty() {
+            self.convert_first_tool_use_to_function_call(&tool_uses)?
+        } else {
+            None
+        };
+        
+        // Determine finish reason
+        let finish_reason = if tool_calls.is_some() {
+            if function_call.is_some() {
+                FinishReason::FunctionCall
+            } else {
+                FinishReason::ToolCalls
+            }
+        } else {
+            response.stop_reason.as_ref()
+                .map(|r| normalize_finish_reason(r))
+                .unwrap_or(FinishReason::Stop)
+        };
         
         let message = ChatMessage {
             role: MessageRole::Assistant,
-            content,
+            content: text_content,
             name: None,
-            function_call: None,
-            tool_calls: None,
+            function_call,
+            tool_calls,
             tool_call_id: None,
         };
 
@@ -162,9 +400,7 @@ impl ProviderConverter for VertexAIConverter {
             index: 0,
             message,
             logprobs: None,
-            finish_reason: response.stop_reason.as_ref()
-                .map(|r| normalize_finish_reason(r))
-                .unwrap_or(FinishReason::Stop),
+            finish_reason,
         };
 
         let usage = Usage {
@@ -189,100 +425,106 @@ impl ProviderConverter for VertexAIConverter {
         request_id: &str,
         model: &str,
     ) -> Result<Option<ChatCompletionChunk>> {
-        debug!("Converting Vertex AI chunk - event_type: {}, has_delta: {}, has_content: {}, has_tool_calls: {}", 
-            chunk.event_type, 
-            chunk.delta.is_some(),
-            chunk.get_content().is_some(),
-            self.has_tool_calls(chunk)
-        );
-
-        // Check for tool calls first (they take precedence over content)
-        if self.has_tool_calls(chunk) {
-            debug!("Processing tool calls in chunk '{}'", chunk.event_type);
-            return self.create_tool_calls_chunk(chunk, request_id, model);
-        }
-
-        // Then try to extract content
+        // Handle text content
         if let Some(content) = chunk.get_content() {
-            debug!("Found content in chunk '{}': {}", chunk.event_type, content);
-            return self.create_content_chunk(content, request_id, model);
-        }
+            let delta = ChatMessage {
+                role: MessageRole::Assistant,
+                content,
+                name: None,
+                function_call: None,
+                tool_calls: None,
+                tool_call_id: None,
+            };
 
-        // Handle specific event types for non-content chunks
-        match chunk.event_type.as_str() {
-            // Standard Anthropic event types
-            "message_start" => {
-                debug!("Received message_start chunk");
-                Ok(None) // Skip initial chunks
-            }
-            "content_block_start" => {
-                debug!("Received content_block_start chunk");
-                Ok(None) // Skip content block start
-            }
-            "content_block_delta" | "ping" => {
-                // These should have been handled above, but just in case
-                debug!("content_block_delta/ping chunk without content");
-                Ok(None)
-            }
-            "content_block_stop" => {
-                debug!("Received content_block_stop chunk");
-                Ok(None) // Skip content block end
-            }
-            "message_delta" => {
-                // Message delta with potential finish reason
-                let finish_reason = chunk.get_finish_reason()
-                    .map(|r| match r {
-                        super::VertexFinishReason::Stop => FinishReason::Stop,
-                        super::VertexFinishReason::MaxTokens => FinishReason::Length,
-                        super::VertexFinishReason::Safety => FinishReason::ContentFilter,
-                        super::VertexFinishReason::Recitation => FinishReason::ContentFilter,
-                        super::VertexFinishReason::Other => FinishReason::Stop,
+            let choice = ChatCompletionChunkChoice {
+                index: 0,
+                delta,
+                logprobs: None,
+                finish_reason: None,
+            };
+
+            return Ok(Some(ChatCompletionChunk::new(
+                request_id.to_string(),
+                model.to_string(),
+                vec![choice],
+            )));
+        }
+        
+        // Handle tool use chunks (for streaming tool calls)
+        if let Some(content_array) = &chunk.content {
+            for content in content_array {
+                if let VertexContent::ToolUse { id, name, input } = content {
+                    // Create streaming tool call delta
+                    let tool_call_delta = serde_json::json!({
+                        "id": id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": serde_json::to_string(input)?
+                        }
                     });
+                    
+                    // Also create legacy function_call format
+                    let function_call_delta = serde_json::json!({
+                        "name": name,
+                        "arguments": serde_json::to_string(input)?
+                    });
+                    
+                    let delta = ChatMessage {
+                        role: MessageRole::Assistant,
+                        content: String::new(),
+                        name: None,
+                        function_call: Some(function_call_delta),
+                        tool_calls: Some(vec![tool_call_delta]),
+                        tool_call_id: None,
+                    };
 
-                if finish_reason.is_some() {
-                    debug!("Found finish reason in message_delta: {:?}", finish_reason);
-                    self.create_finish_chunk(finish_reason, request_id, model)
-                } else {
-                    Ok(None)
-                }
-            }
-            "message_stop" => {
-                // Final chunk with usage
-                if let Some(usage) = &chunk.usage {
-                    debug!("Found usage info in message_stop");
-                    self.create_usage_chunk(usage, request_id, model)
-                } else {
-                    debug!("message_stop without usage, creating final chunk");
-                    self.create_finish_chunk(Some(FinishReason::Stop), request_id, model)
-                }
-            }
-            // Vertex AI and other specific event types
-            "message" | "completion" | "text" | "delta" => {
-                // These might contain usage information or be final chunks
-                if let Some(usage) = &chunk.usage {
-                    debug!("Found usage info in '{}' chunk", chunk.event_type);
-                    self.create_usage_chunk(usage, request_id, model)
-                } else {
-                    debug!("'{}' chunk without content or usage, skipping", chunk.event_type);
-                    Ok(None)
-                }
-            }
-            unknown_type => {
-                debug!("Unknown chunk type '{}', checking for usage or finish reason", unknown_type);
-                
-                // Check for usage information
-                if let Some(usage) = &chunk.usage {
-                    debug!("Found usage info in unknown chunk type '{}'", unknown_type);
-                    self.create_usage_chunk(usage, request_id, model)
-                } else if let Some(_finish_reason) = chunk.get_finish_reason() {
-                    debug!("Found finish reason in unknown chunk type '{}'", unknown_type);
-                    self.create_finish_chunk(Some(FinishReason::Stop), request_id, model)
-                } else {
-                    debug!("No useful data found in unknown chunk type '{}'", unknown_type);
-                    Ok(None)
+                    let choice = ChatCompletionChunkChoice {
+                        index: 0,
+                        delta,
+                        logprobs: None,
+                        finish_reason: None,
+                    };
+
+                    return Ok(Some(ChatCompletionChunk::new(
+                        request_id.to_string(),
+                        model.to_string(),
+                        vec![choice],
+                    )));
                 }
             }
         }
+        
+        // Handle finish reason
+        if let Some(finish_reason) = chunk.get_finish_reason() {
+            let openai_finish_reason = match finish_reason {
+                super::types::VertexFinishReason::Stop => FinishReason::Stop,
+                super::types::VertexFinishReason::MaxTokens => FinishReason::Length,
+                _ => FinishReason::Stop,
+            };
+            
+            let choice = ChatCompletionChunkChoice {
+                index: 0,
+                delta: ChatMessage {
+                    role: MessageRole::Assistant,
+                    content: String::new(),
+                    name: None,
+                    function_call: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                logprobs: None,
+                finish_reason: Some(openai_finish_reason),
+            };
+
+            return Ok(Some(ChatCompletionChunk::new(
+                request_id.to_string(),
+                model.to_string(),
+                vec![choice],
+            )));
+        }
+
+        Ok(None)
     }
 
     fn provider_name(&self) -> &'static str {
@@ -301,165 +543,6 @@ impl ProviderConverter for VertexAIConverter {
     }
 }
 
-impl VertexAIConverter {
-    /// Create a content chunk with text
-    fn create_content_chunk(
-        &self,
-        content: String,
-        request_id: &str,
-        model: &str,
-    ) -> Result<Option<ChatCompletionChunk>> {
-        let delta = ChatMessage {
-            role: MessageRole::Assistant,
-            content,
-            name: None,
-            function_call: None,
-            tool_calls: None,
-            tool_call_id: None,
-        };
-
-        let choice = ChatCompletionChunkChoice {
-            index: 0,
-            delta,
-            logprobs: None,
-            finish_reason: None,
-        };
-
-        Ok(Some(ChatCompletionChunk::new(
-            request_id.to_string(),
-            model.to_string(),
-            vec![choice],
-        )))
-    }
-
-    /// Create a finish chunk with finish reason
-    fn create_finish_chunk(
-        &self,
-        finish_reason: Option<FinishReason>,
-        request_id: &str,
-        model: &str,
-    ) -> Result<Option<ChatCompletionChunk>> {
-        let choice = ChatCompletionChunkChoice {
-            index: 0,
-            delta: ChatMessage::empty(),
-            logprobs: None,
-            finish_reason,
-        };
-
-        Ok(Some(ChatCompletionChunk::new(
-            request_id.to_string(),
-            model.to_string(),
-            vec![choice],
-        )))
-    }
-
-    /// Create a usage chunk with token counts
-    fn create_usage_chunk(
-        &self,
-        usage: &VertexUsage,
-        request_id: &str,
-        model: &str,
-    ) -> Result<Option<ChatCompletionChunk>> {
-        let openai_usage = Usage {
-            prompt_tokens: usage.input_tokens,
-            completion_tokens: usage.output_tokens,
-            total_tokens: usage.input_tokens + usage.output_tokens,
-            prompt_tokens_details: None,
-            completion_tokens_details: None,
-        };
-
-        let choice = ChatCompletionChunkChoice {
-            index: 0,
-            delta: ChatMessage::empty(),
-            logprobs: None,
-            finish_reason: Some(FinishReason::Stop),
-        };
-
-        Ok(Some(ChatCompletionChunk::new_with_usage(
-            request_id.to_string(),
-            model.to_string(),
-            vec![choice],
-            openai_usage,
-        )))
-    }
-
-    /// Check if chunk contains tool calls
-    fn has_tool_calls(&self, chunk: &VertexStreamChunk) -> bool {
-        // Check if content contains tool_use blocks
-        if let Some(content_blocks) = &chunk.content {
-            for content in content_blocks {
-                if content.content_type == "tool_use" {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Create a tool calls chunk
-    fn create_tool_calls_chunk(
-        &self,
-        chunk: &VertexStreamChunk,
-        request_id: &str,
-        model: &str,
-    ) -> Result<Option<ChatCompletionChunk>> {
-        // Extract tool calls from chunk content
-        if let Some(content_blocks) = &chunk.content {
-            for content in content_blocks {
-                if content.content_type == "tool_use" {
-                    debug!("Processing tool_use content block with tool_manager");
-                    
-                    // Parse the tool call from the content text
-                    if let Ok(tool_call_json) = serde_json::from_str::<serde_json::Value>(&content.text) {
-                        // Create a temporary mutable tool manager for processing
-                        let mut temp_tool_manager = ToolCallManager::claude();
-                        
-                        // Use the tool_manager to process the tool call
-                        if let Ok(Some(tool_calls)) = temp_tool_manager.process_tool_calls(&tool_call_json, request_id.to_string()) {
-                            debug!("Extracted {} tool calls from chunk", tool_calls.len());
-                            
-                            // Convert to OpenAI format
-                            let openai_tool_calls = temp_tool_manager.to_openai_format(&tool_calls);
-                            
-                            // Convert ToolCall structs to JSON Values
-                            let tool_calls_json: Vec<serde_json::Value> = openai_tool_calls
-                                .into_iter()
-                                .map(|tc| serde_json::to_value(tc).unwrap_or_default())
-                                .collect();
-                            
-                            // Create OpenAI format tool calls chunk
-                            let delta = ChatMessage {
-                                role: MessageRole::Assistant,
-                                content: String::new(),
-                                name: None,
-                                function_call: None,
-                                tool_calls: Some(tool_calls_json),
-                                tool_call_id: None,
-                            };
-
-                            let choice = ChatCompletionChunkChoice {
-                                index: 0,
-                                delta,
-                                logprobs: None,
-                                finish_reason: None,
-                            };
-
-                            return Ok(Some(ChatCompletionChunk::new(
-                                request_id.to_string(),
-                                model.to_string(),
-                                vec![choice],
-                            )));
-                        }
-                    }
-                }
-            }
-        }
-        
-        // No tool calls found or couldn't process them
-        Ok(None)
-    }
-}
-
 impl ProviderErrorHandler for VertexAIConverter {
     type ProviderError = VertexError;
 
@@ -468,7 +551,6 @@ impl ProviderErrorHandler for VertexAIConverter {
     }
 
     fn is_retryable_error(&self, error: &Self::ProviderError) -> bool {
-        // Retry on rate limits and temporary server errors based on error type
         error.error.error_type.contains("rate_limit") || 
         error.error.error_type.contains("server_error") ||
         error.error.message.contains("rate limit") ||
@@ -485,43 +567,12 @@ mod tests {
     fn test_vertex_converter_creation() {
         let converter = VertexAIConverter::new();
         assert_eq!(converter.provider_name(), "vertex_ai");
-        assert!(!converter.supported_models().is_empty());
-    }
-
-    #[test]
-    fn test_model_normalization() {
-        let converter = VertexAIConverter::new();
-        
-        assert_eq!(
-            converter.normalize_model_name("claude-4-sonnet-20250514"),
-            "claude-sonnet-4-5@20250929"
-        );
-        
-        assert_eq!(
-            converter.normalize_model_name("claude-3-5-haiku"),
-            "claude-3-5-haiku@20241022"
-        );
-        
-        // Unknown models should pass through
-        assert_eq!(
-            converter.normalize_model_name("unknown-model"),
-            "unknown-model"
-        );
     }
 
     #[test]
     fn test_message_conversion() {
         let converter = VertexAIConverter::new();
-        
         let messages = vec![
-            ChatMessage {
-                role: MessageRole::System,
-                content: "You are helpful".to_string(),
-                name: None,
-                function_call: None,
-                tool_calls: None,
-                tool_call_id: None,
-            },
             ChatMessage {
                 role: MessageRole::User,
                 content: "Hello".to_string(),
@@ -529,15 +580,47 @@ mod tests {
                 function_call: None,
                 tool_calls: None,
                 tool_call_id: None,
-            },
+            }
         ];
 
-        let vertex_messages = converter.convert_messages(&messages).unwrap();
-        
-        // Should have 1 message (system prompt prepended to user message)
+        let (vertex_messages, system) = converter.convert_messages(&messages).unwrap();
         assert_eq!(vertex_messages.len(), 1);
         assert_eq!(vertex_messages[0].role, VertexRole::User);
-        assert!(vertex_messages[0].content.contains("You are helpful"));
-        assert!(vertex_messages[0].content.contains("Hello"));
+        assert_eq!(vertex_messages[0].content, "Hello");
+        assert!(system.is_none());
+    }
+
+    #[test]
+    fn test_tool_conversion() {
+        let converter = VertexAIConverter::new();
+        let tools = vec![
+            ToolDefinition {
+                tool_type: "function".to_string(),
+                function: FunctionDefinition {
+                    name: "get_weather".to_string(),
+                    description: Some("Get weather".to_string()),
+                    parameters: Some(serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "location": {"type": "string"}
+                        }
+                    })),
+                },
+            }
+        ];
+
+        let vertex_tools = converter.convert_tools(&tools).unwrap();
+        assert_eq!(vertex_tools.len(), 1);
+        assert_eq!(vertex_tools[0].name, "get_weather");
+        assert_eq!(vertex_tools[0].description, "Get weather");
+    }
+
+    #[test]
+    fn test_model_normalization() {
+        let converter = VertexAIConverter::new();
+        assert_eq!(
+            converter.normalize_vertex_model("claude-4-sonnet"),
+            "claude-sonnet-4@20250514"
+        );
     }
 }

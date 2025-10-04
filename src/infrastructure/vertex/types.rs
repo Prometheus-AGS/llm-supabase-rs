@@ -3,6 +3,7 @@
 // Vertex AI API types for Claude models (Anthropic Messages API format)
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Helper function to skip serializing stream field when false
 fn should_skip_stream(stream: &bool) -> bool {
@@ -42,9 +43,47 @@ pub struct VertexPredictRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_sequences: Option<Vec<String>>,
 
+    /// Tools available for the model to use
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<VertexTool>>,
+
+    /// Tool choice configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<VertexToolChoice>,
+
     /// Whether to stream the response (required for streaming endpoint)
     #[serde(skip_serializing_if = "should_skip_stream")]
     pub stream: bool,
+}
+
+/// Tool definition for Vertex AI (Anthropic format)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VertexTool {
+    pub name: String,
+    pub description: String,
+    pub input_schema: Value,
+}
+
+/// Tool choice configuration for Vertex AI (Anthropic format)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum VertexToolChoice {
+    /// Auto tool choice - serializes as object with type "auto"
+    Auto {
+        #[serde(rename = "type")]
+        tool_type: String
+    },
+    /// Any tool choice (required) - serializes as object with type "any"
+    Any {
+        #[serde(rename = "type")]
+        tool_type: String
+    },
+    /// Specific tool choice - serializes as object with type "tool" and name
+    Tool {
+        #[serde(rename = "type")]
+        tool_type: String,
+        name: String
+    },
 }
 
 /// Message format for Claude in Vertex AI
@@ -85,13 +124,54 @@ pub struct VertexPredictResponse {
     pub usage: VertexUsage,
 }
 
+impl VertexPredictResponse {
+    /// Get text content from the response, combining all text blocks
+    pub fn get_text(&self) -> String {
+        self.content
+            .iter()
+            .filter_map(|content| content.get_text())
+            .collect::<Vec<&str>>()
+            .join("")
+    }
+    
+    /// Get all tool use blocks from the response
+    pub fn get_tool_uses(&self) -> Vec<&VertexContent> {
+        self.content
+            .iter()
+            .filter(|content| content.is_tool_use())
+            .collect()
+    }
+}
+
 /// Content block in the response
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VertexContent {
-    #[serde(rename = "type")]
-    pub content_type: String,
+#[serde(tag = "type")]
+pub enum VertexContent {
+    #[serde(rename = "text")]
+    Text {
+        text: String,
+    },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
+}
+
+impl VertexContent {
+    /// Get text content if this is a text block
+    pub fn get_text(&self) -> Option<&str> {
+        match self {
+            VertexContent::Text { text } => Some(text),
+            _ => None,
+        }
+    }
     
-    pub text: String,
+    /// Check if this is a tool use block
+    pub fn is_tool_use(&self) -> bool {
+        matches!(self, VertexContent::ToolUse { .. })
+    }
 }
 
 /// Token usage statistics
@@ -278,6 +358,8 @@ impl VertexPredictRequest {
             top_p: None,
             top_k: None,
             stop_sequences: None,
+            tools: None,
+            tool_choice: None,
             stream: false,
         }
     }
@@ -338,14 +420,6 @@ impl VertexMessage {
 }
 
 impl VertexPredictResponse {
-    /// Get the text content from the response
-    pub fn get_text(&self) -> String {
-        self.content
-            .iter()
-            .map(|c| c.text.as_str())
-            .collect::<Vec<_>>()
-            .join("")
-    }
     
     /// Convert to internal prediction format for backward compatibility
     pub fn to_prediction(&self) -> VertexPrediction {
@@ -374,8 +448,10 @@ impl VertexStreamChunk {
         // Try direct content field first (Vertex AI message format)
         if let Some(content_array) = &self.content {
             for content in content_array {
-                if !content.text.is_empty() {
-                    return Some(content.text.clone());
+                if let Some(text) = content.get_text() {
+                    if !text.is_empty() {
+                        return Some(text.to_string());
+                    }
                 }
             }
         }
@@ -519,12 +595,10 @@ mod tests {
             response_type: "message".to_string(),
             role: "assistant".to_string(),
             content: vec![
-                VertexContent {
-                    content_type: "text".to_string(),
+                VertexContent::Text {
                     text: "Hello ".to_string(),
                 },
-                VertexContent {
-                    content_type: "text".to_string(),
+                VertexContent::Text {
                     text: "there!".to_string(),
                 },
             ],

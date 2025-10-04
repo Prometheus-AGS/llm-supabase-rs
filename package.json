@@ -1,0 +1,43 @@
+{
+  "name": "llm-supabase-tool-calling-tests",
+  "version": "1.0.0",
+  "description": "TypeScript test suite for LLM Supabase service tool calling capabilities",
+  "main": "test-tool-calling.ts",
+  "scripts": {
+    "test": "tsx test-tool-calling.ts",
+    "test:tools": "tsx test-tool-calling.ts",
+    "test:watch": "tsx watch test-tool-calling.ts",
+    "diagnose": "tsx diagnose-connection.ts",
+    "build": "tsc --noEmit",
+    "lint": "eslint *.ts",
+    "format": "prettier --write *.ts"
+  },
+  "keywords": [
+    "typescript",
+    "testing",
+    "openai",
+    "tool-calling",
+    "llm",
+    "supabase"
+  ],
+  "author": "Tool Calling Test Suite",
+  "license": "MIT",
+  "dependencies": {
+    "eventsource": "^2.0.2",
+    "chalk": "^5.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/eventsource": "^1.1.15",
+    "tsx": "^4.6.0",
+    "typescript": "^5.3.0",
+    "eslint": "^8.55.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "prettier": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "type": "module"
+}

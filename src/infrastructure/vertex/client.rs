@@ -153,7 +153,7 @@ impl VertexAIClient {
 
                         debug!("Raw Vertex AI chunk received: {} chars", chunk_str.len());
                         
-                        // Handle SSE format if present
+                        // Handle SSE format - parse both single-line and multi-line events
                         let clean_chunk = if chunk_str.starts_with("data: ") {
                             let data = chunk_str.strip_prefix("data: ").unwrap_or(&chunk_str);
                             if data.trim() == "[DONE]" {
@@ -175,6 +175,28 @@ impl VertexAIClient {
                                 break;
                             }
                             data
+                        } else if chunk_str.contains("event: ") && chunk_str.contains("data: ") {
+                            // Handle multi-line SSE events (event: + data: format)
+                            let lines: Vec<&str> = chunk_str.lines().collect();
+                            let mut event_type = "";
+                            let mut data_content = "";
+                            
+                            for line in lines {
+                                if let Some(event) = line.strip_prefix("event: ") {
+                                    event_type = event.trim();
+                                } else if let Some(data) = line.strip_prefix("data: ") {
+                                    data_content = data.trim();
+                                }
+                            }
+                            
+                            // Only process events that contain tool_use or other important content
+                            if event_type == "content_block_start" || event_type == "content_block_delta" || event_type == "message_delta" {
+                                debug!("Processing SSE event: {} with data: {}", event_type, data_content);
+                                data_content
+                            } else {
+                                debug!("Skipping SSE event: {}", event_type);
+                                continue;
+                            }
                         } else if chunk_str.trim().starts_with("{") {
                             &chunk_str
                         } else if chunk_str.trim().is_empty() {
@@ -201,9 +223,28 @@ impl VertexAIClient {
                                         id: None,
                                         role: None,
                                         model: None,
-                                        content: Some(vec![VertexContent {
-                                            content_type: "text".to_string(),
+                                        content: Some(vec![VertexContent::Text {
                                             text,
+                                        }]),
+                                        index: None,
+                                        delta: None,
+                                        message: None,
+                                        content_block: None,
+                                        usage: None,
+                                    })
+                                },
+                                // Handle tool use chunks properly
+                                super::streaming_buffer::ProcessedChunk::ToolUse { id, name, input } => {
+                                    debug!("Converting tool use chunk: {} ({})", name, id);
+                                    Some(VertexStreamChunk {
+                                        event_type: "content_block_start".to_string(),
+                                        id: None,
+                                        role: None,
+                                        model: None,
+                                        content: Some(vec![VertexContent::ToolUse {
+                                            id: id.clone(),
+                                            name: name.clone(),
+                                            input: input.clone(),
                                         }]),
                                         index: None,
                                         delta: None,
@@ -214,14 +255,13 @@ impl VertexAIClient {
                                 },
                                 // Other chunk types (simplified for this fix)
                                 _ => {
-                                    debug!("Converting other chunk type");
+                                    debug!("Converting other chunk type: {:?}", processed_chunk);
                                     Some(VertexStreamChunk {
                                         event_type: "content_block_delta".to_string(),
                                         id: None,
                                         role: None,
                                         model: None,
-                                        content: Some(vec![VertexContent {
-                                            content_type: "text".to_string(),
+                                        content: Some(vec![VertexContent::Text {
                                             text: "[processed_chunk]".to_string(), // Placeholder for non-serializable chunk
                                         }]),
                                         index: None,
