@@ -399,8 +399,12 @@ fn validate_chat_request(request: &ChatCompletionRequest, request_id: &str) -> R
 
     // Validate message content
     for (i, message) in request.messages.iter().enumerate() {
-        if message.content.is_empty() {
-            warn!(request_id = %request_id, message_index = i, "Empty message content");
+        // Allow empty content for assistant messages that have tool calls
+        let has_tool_calls = message.tool_calls.as_ref().map_or(false, |calls| !calls.is_empty());
+        let has_function_call = message.function_call.is_some();
+        
+        if message.content.is_empty() && !has_tool_calls && !has_function_call {
+            warn!(request_id = %request_id, message_index = i, "Empty message content without tool calls");
             return Err(AppError::validation(format!("Message {} has empty content", i)));
         }
 

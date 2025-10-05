@@ -46,6 +46,13 @@ pub struct JsonStreamingBuffer {
     
     /// Buffer for incomplete tool call data
     tool_call_buffer: String,
+    
+    /// Current tool call metadata
+    current_tool_id: Option<String>,
+    current_tool_name: Option<String>,
+    
+    /// Track processed content to prevent duplicates
+    processed_content_hashes: std::collections::HashSet<u64>,
 }
 
 impl Default for JsonStreamingBuffer {
@@ -65,6 +72,9 @@ impl JsonStreamingBuffer {
             accumulated_tool_calls: Vec::new(),
             building_tool_call: false,
             tool_call_buffer: String::new(),
+            current_tool_id: None,
+            current_tool_name: None,
+            processed_content_hashes: std::collections::HashSet::new(),
         }
     }
 
@@ -159,8 +169,42 @@ impl JsonStreamingBuffer {
                     if let Some(delta) = json_value.get("delta") {
                         if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
                             if !text.is_empty() {
+                                // Check for duplicate content using hash
+                                let content_hash = {
+                                    use std::collections::hash_map::DefaultHasher;
+                                    use std::hash::{Hash, Hasher};
+                                    let mut hasher = DefaultHasher::new();
+                                    text.hash(&mut hasher);
+                                    hasher.finish()
+                                };
+                                
+                                if self.processed_content_hashes.contains(&content_hash) {
+                                    debug!("Skipping duplicate content: {} chars", text.len());
+                                    return None;
+                                }
+                                
+                                self.processed_content_hashes.insert(content_hash);
                                 debug!("Extracted text content: {} chars", text.len());
                                 return Some(ProcessedChunk::Content(text.to_string()));
+                            }
+                        }
+                        
+                        // Handle input_json_delta for tool arguments
+                        if delta.get("type").and_then(|t| t.as_str()) == Some("input_json_delta") {
+                            if let Some(partial_json) = delta.get("partial_json").and_then(|p| p.as_str()) {
+                                debug!("Received input_json_delta: {}", partial_json);
+                                
+                                if self.building_tool_call {
+                                    // Accumulate the partial JSON in the tool call buffer
+                                    self.tool_call_buffer.push_str(partial_json);
+                                    debug!("Accumulated tool call buffer: {}", self.tool_call_buffer);
+                                } else {
+                                    // Start building tool call if we weren't already
+                                    self.building_tool_call = true;
+                                    self.tool_call_buffer = partial_json.to_string();
+                                    debug!("Started building tool call with: {}", partial_json);
+                                }
+                                return None; // Don't emit anything yet, wait for complete tool call
                             }
                         }
                     }
@@ -177,17 +221,45 @@ impl JsonStreamingBuffer {
                                 content_block.get("name").and_then(|n| n.as_str()),
                                 content_block.get("input")
                             ) {
-                                debug!("Tool call is complete in content_block_start: {} ({})", name, id);
-                                return Some(ProcessedChunk::ToolUse {
-                                    id: id.to_string(),
-                                    name: name.to_string(),
-                                    input: input.clone(),
-                                });
+                                // Check if input is empty or null - if so, wait for input_json_delta events
+                                let is_empty_input = match input {
+                                    serde_json::Value::Object(obj) => obj.is_empty(),
+                                    serde_json::Value::Null => true,
+                                    _ => false,
+                                };
+                                
+                                if !is_empty_input {
+                                    debug!("Tool call is complete in content_block_start: {} ({})", name, id);
+                                    return Some(ProcessedChunk::ToolUse {
+                                        id: id.to_string(),
+                                        name: name.to_string(),
+                                        input: input.clone(),
+                                    });
+                                } else {
+                                    debug!("Tool call has empty input, waiting for input_json_delta events");
+                                    // Tool call has empty input, save metadata and wait for arguments
+                                    self.building_tool_call = true;
+                                    self.tool_call_buffer.clear();
+                                    self.current_tool_id = Some(id.to_string());
+                                    self.current_tool_name = Some(name.to_string());
+                                    debug!("Saved tool metadata for streaming: id={}, name={}", id, name);
+                                    return None;
+                                }
                             } else {
-                                // Tool call is incomplete, wait for more chunks
+                                // Tool call is incomplete, save metadata and wait for arguments
                                 debug!("Tool call is incomplete, waiting for more chunks");
                                 self.building_tool_call = true;
-                                self.tool_call_buffer = json_str.to_string();
+                                self.tool_call_buffer.clear();
+                                
+                                // Save the tool metadata
+                                if let Some(id) = content_block.get("id").and_then(|i| i.as_str()) {
+                                    self.current_tool_id = Some(id.to_string());
+                                }
+                                if let Some(name) = content_block.get("name").and_then(|n| n.as_str()) {
+                                    self.current_tool_name = Some(name.to_string());
+                                }
+                                
+                                debug!("Saved tool metadata: id={:?}, name={:?}", self.current_tool_id, self.current_tool_name);
                                 return None;
                             }
                         }
@@ -197,10 +269,38 @@ impl JsonStreamingBuffer {
                     if self.building_tool_call {
                         debug!("Tool call block completed");
                         self.building_tool_call = false;
-                        // Try to extract tool call from accumulated buffer
-                        if let Some(tool_chunk) = self.extract_tool_call_from_buffer() {
+                        
+                        // Try to create tool call from accumulated data
+                        if let (Some(id), Some(name)) = (&self.current_tool_id, &self.current_tool_name) {
+                            // Parse the accumulated JSON arguments
+                            let input = if self.tool_call_buffer.is_empty() {
+                                serde_json::Value::Object(serde_json::Map::new()) // Empty object
+                            } else {
+                                match serde_json::from_str::<serde_json::Value>(&self.tool_call_buffer) {
+                                    Ok(parsed) => parsed,
+                                    Err(e) => {
+                                        debug!("Failed to parse accumulated tool arguments: {}, using empty object", e);
+                                        serde_json::Value::Object(serde_json::Map::new())
+                                    }
+                                }
+                            };
+                            
+                            debug!("Creating tool call: {} ({}) with args: {:?}", name, id, input);
+                            
+                            let tool_chunk = ProcessedChunk::ToolUse {
+                                id: id.clone(),
+                                name: name.clone(),
+                                input,
+                            };
+                            
+                            // Clear state
                             self.tool_call_buffer.clear();
+                            self.current_tool_id = None;
+                            self.current_tool_name = None;
+                            
                             return Some(tool_chunk);
+                        } else {
+                            debug!("Tool call completed but missing metadata: id={:?}, name={:?}", self.current_tool_id, self.current_tool_name);
                         }
                     }
                 }
@@ -333,6 +433,7 @@ impl JsonStreamingBuffer {
             return None;
         }
 
+        // First try to parse as complete JSON object (for content_block format)
         if let Ok(json_value) = serde_json::from_str::<Value>(&self.tool_call_buffer) {
             if let Some(content_block) = json_value.get("content_block") {
                 if let (Some(id), Some(name), Some(input)) = (
@@ -340,7 +441,7 @@ impl JsonStreamingBuffer {
                     content_block.get("name").and_then(|n| n.as_str()),
                     content_block.get("input")
                 ) {
-                    debug!("Extracted tool call: {} ({})", name, id);
+                    debug!("Extracted tool call from content_block: {} ({})", name, id);
                     return Some(ProcessedChunk::ToolUse {
                         id: id.to_string(),
                         name: name.to_string(),
@@ -348,6 +449,17 @@ impl JsonStreamingBuffer {
                     });
                 }
             }
+        }
+        
+        // If that fails, try to parse as accumulated JSON arguments
+        // The buffer might contain just the JSON arguments from input_json_delta events
+        if let Ok(input_json) = serde_json::from_str::<Value>(&self.tool_call_buffer) {
+            debug!("Successfully parsed accumulated JSON arguments: {:?}", input_json);
+            // We need to get the tool name and ID from somewhere else
+            // For now, we'll return None and let the content_block_start handle it
+            // This is a fallback case that shouldn't normally happen
+        } else {
+            debug!("Failed to parse tool call buffer as JSON: {}", self.tool_call_buffer);
         }
 
         None

@@ -394,9 +394,12 @@ class E2EToolCallingTest {
       }
       
       // Add assistant message with tool calls to conversation
+      // Ensure content is not empty - use a default message if the LLM didn't provide content
+      const assistantContent = assistantMessage.content || "I'll help you with that.";
+      
       messages.push({
         role: 'assistant',
-        content: assistantMessage.content,
+        content: assistantContent,
         tool_calls: assistantMessage.tool_calls
       });
       
@@ -436,6 +439,12 @@ class E2EToolCallingTest {
       console.log(chalk.yellow(`\n💬 Step 6: Final Answer from LLM`));
       
       const finalMessage = finalResponse.choices[0].message;
+      
+      // Debug: Log the entire final response
+      console.log(chalk.gray(`   Debug - Final response: ${JSON.stringify(finalResponse, null, 2)}`));
+      console.log(chalk.gray(`   Debug - Final message: ${JSON.stringify(finalMessage, null, 2)}`));
+      console.log(chalk.gray(`   Debug - Content type: ${typeof finalMessage.content}`));
+      console.log(chalk.gray(`   Debug - Content value: "${finalMessage.content}"`));
       
       if (!finalMessage.content) {
         throw new Error('LLM did not provide a final answer');

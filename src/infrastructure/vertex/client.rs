@@ -190,7 +190,7 @@ impl VertexAIClient {
                             }
                             
                             // Only process events that contain tool_use or other important content
-                            if event_type == "content_block_start" || event_type == "content_block_delta" || event_type == "message_delta" {
+                            if event_type == "content_block_start" || event_type == "content_block_delta" || event_type == "content_block_stop" || event_type == "message_delta" || event_type == "input_json_delta" {
                                 debug!("Processing SSE event: {} with data: {}", event_type, data_content);
                                 
                                 // Wrap the data with the event type so the buffer can recognize it

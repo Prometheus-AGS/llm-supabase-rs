@@ -55,7 +55,26 @@ npm run test:e2e
 4. Stock price (get_stock_price)
 5. Database search (search_database)
 
-### 3. **test-tool-calling.ts** 🔍 Unit Tests
+### 3. **test-streaming-tool-e2e.ts** 🌊 Streaming E2E Tests
+Complete streaming flow with SSE (Server-Sent Events).
+
+```bash
+npm run test:streaming
+```
+
+**What it does:**
+- Streams initial request with tool definitions
+- Accumulates tool calls from streaming chunks
+- Executes tools locally
+- Streams final answer with tool results
+
+**Tests 4 scenarios:**
+1. Calculation via streaming
+2. Weather query via streaming
+3. Time query via streaming
+4. Division calculation via streaming
+
+### 4. **test-tool-calling.ts** 🔍 Unit Tests
 Existing comprehensive unit tests for tool calling features.
 
 ```bash
@@ -138,10 +157,11 @@ All of the above, plus:
 ## Available npm Scripts
 
 ```bash
-npm run test:simple    # Run minimal E2E test
-npm run test:e2e       # Run comprehensive E2E suite
-npm run test:tools     # Run unit tests
-npm run diagnose       # Diagnose connection issues
+npm run test:simple      # Run minimal E2E test (non-streaming)
+npm run test:e2e         # Run comprehensive E2E suite (non-streaming)
+npm run test:streaming   # Run streaming E2E tests (SSE)
+npm run test:tools       # Run unit tests
+npm run diagnose         # Diagnose connection issues
 ```
 
 ## The Complete Flow
