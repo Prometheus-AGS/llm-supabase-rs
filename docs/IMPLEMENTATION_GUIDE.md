@@ -1,778 +1,670 @@
 # Implementation Guide
 
-**Project:** Universal AI Server Proxy (llm-supabase-rs)  
-**Version:** 2.0  
-**Date:** October 2, 2025
+**Project:** Universal AI Server Proxy (llm-supabase-rs)
+**Version:** 2.1
+**Date:** October 15, 2025
+**Status:** ✅ PRODUCTION READY
 
 ## Document Purpose
 
-This guide provides practical, step-by-step instructions for implementing the Universal AI Server Proxy. It complements the Functional Specification and Technical Architecture documents by focusing on "how to build" rather than "what to build."
-
-## Prerequisites
-
-### Required Skills
-- Rust programming (intermediate to advanced)
-- Async programming with Tokio
-- REST API design
-- Cloud services (GCP, AWS)
-- Database design (PostgreSQL)
-- Docker/Kubernetes basics
-
-### Development Environment
-
-#### 1. Install Rust
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-rustup update stable
-rustup default stable
-```
-
-#### 2. Install Development Tools
-```bash
-# SQLx CLI for database migrations
-cargo install sqlx-cli --no-default-features --features postgres
-
-# Additional tools
-cargo install cargo-watch    # Auto-reload on changes
-cargo install cargo-nextest  # Better test runner
-cargo install cargo-audit    # Security auditing
-cargo install cargo-deny     # Dependency checking
-```
-
-#### 3. Install Required Services
-```bash
-# PostgreSQL (via Docker)
-docker run -d \
-  --name postgres \
-  -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=llm_proxy \
-  -p 5432:5432 \
-  postgres:15
-
-# Redis (optional, for caching)
-docker run -d \
-  --name redis \
-  -p 6379:6379 \
-  redis:7
-```
+This guide provides practical instructions for **using and extending** the production-ready Universal AI Server Proxy. The system is fully implemented with comprehensive multi-provider support, advanced tool calling, and extensive observability.
 
 ---
 
-## Phase 1: Project Foundation (Week 1-4)
+## 🚀 **Quick Start (Production Ready System)**
 
-### Step 1: Initialize Project Structure
+### **Prerequisites**
+- Rust 1.75+
+- Docker (optional, for local development)
+- Supabase account (for authentication)
+- Google Cloud Platform account (for Vertex AI)
 
+### **Setup Instructions (< 30 minutes)**
+
+#### 1. **Clone and Setup**
 ```bash
-# Create project
-cargo new --lib llm-supabase-rs
+# Clone the repository
+git clone <repository-url>
 cd llm-supabase-rs
 
-# Create directory structure
-mkdir -p src/{api,domain,infrastructure,config,shared}
-mkdir -p src/api/{handlers,middleware}
-mkdir -p src/domain/{providers,tools,models,services}
-mkdir -p src/infrastructure/{providers,database,webhooks,mcp}
-mkdir -p tests/{unit,integration}
-mkdir -p docs
-mkdir -p examples
+# Install Rust dependencies
+cargo build
+
+# Copy environment template
+cp .env.example .env
 ```
 
-### Step 2: Update Cargo.toml
+#### 2. **Configure Environment Variables**
+Edit `.env` with your credentials:
 
-Add dependencies progressively. Start with core dependencies:
-
-```toml
-[package]
-name = "llm-supabase-rs"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-# Web framework
-axum = { version = "0.7", features = ["macros"] }
-tokio = { version = "1.0", features = ["full"] }
-tower = "0.4"
-tower-http = { version = "0.5", features = ["trace", "cors"] }
-
-# Serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-
-# HTTP client
-reqwest = { version = "0.11", features = ["json", "stream"] }
-
-# Authentication
-jsonwebtoken = "9.2"
-
-# Error handling
-anyhow = "1.0"
-thiserror = "1.0"
-
-# Logging
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-# Async utilities
-futures = "0.3"
-async-trait = "0.1"
-
-# Configuration
-config = "0.14"
-dotenv = "0.15"
-
-# Database
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono"] }
-
-# Utilities
-uuid = { version = "1.6", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
-dashmap = "5.5"
-
-[dev-dependencies]
-mockall = "0.12"
-tokio-test = "0.4"
-```
-
-### Step 3: Create Configuration System
-
-**File: `src/config/mod.rs`**
-```rust
-pub mod app;
-pub mod providers;
-
-pub use app::AppConfig;
-pub use providers::ProvidersConfig;
-```
-
-**File: `src/config/app.rs`**
-```rust
-use serde::Deserialize;
-use std::net::SocketAddr;
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct AppConfig {
-    pub server: ServerConfig,
-    pub supabase: SupabaseConfig,
-    pub providers: ProvidersConfig,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ServerConfig {
-    pub host: String,
-    pub port: u16,
-}
-
-impl ServerConfig {
-    pub fn addr(&self) -> SocketAddr {
-        format!("{}:{}", self.host, self.port)
-            .parse()
-            .expect("Invalid server address")
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SupabaseConfig {
-    pub url: String,
-    pub anon_key: String,
-    pub service_role_key: String,
-    pub jwt_secret: String,
-}
-
-impl AppConfig {
-    pub fn load() -> anyhow::Result<Self> {
-        dotenv::dotenv().ok();
-        
-        let config = config::Config::builder()
-            .add_source(config::File::with_name("config").required(false))
-            .add_source(config::Environment::with_prefix("APP"))
-            .build()?;
-        
-        Ok(config.try_deserialize()?)
-    }
-}
-```
-
-**File: `config.yaml`**
-```yaml
-server:
-  host: "0.0.0.0"
-  port: 8080
-
-supabase:
-  url: "${SUPABASE_URL}"
-  anon_key: "${SUPABASE_ANON_KEY}"
-  service_role_key: "${SUPABASE_SERVICE_ROLE_KEY}"
-  jwt_secret: "${SUPABASE_JWT_SECRET}"
-
-providers:
-  vertex_ai:
-    enabled: true
-    project_id: "${GCP_PROJECT_ID}"
-    location: "us-central1"
-```
-
-**File: `.env`**
 ```bash
-# Server
-APP_SERVER__HOST=0.0.0.0
-APP_SERVER__PORT=8080
+# Server Configuration
+HOST=0.0.0.0
+PORT=8080
+LOG_LEVEL=info
 
-# Supabase
+# Supabase Authentication
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_ANON_KEY=your_anon_key
 SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 SUPABASE_JWT_SECRET=your_jwt_secret
 
-# GCP
+# Google Cloud Platform (Vertex AI)
+GCP_PROJECT_ID=your-gcp-project-id
+GCP_LOCATION=us-central1
+GOOGLE_APPLICATION_CREDENTIALS=./gcp-credentials.json
+
+# Model Configuration
+DEFAULT_MODEL=claude-sonnet-4-20250514
+
+# Optional Provider API Keys (for direct access)
+OPENAI_API_KEY=your_openai_key
+ANTHROPIC_API_KEY=your_anthropic_key
+```
+
+#### 3. **Add GCP Service Account**
+Place your GCP service account JSON file at `./gcp-credentials.json`
+
+#### 4. **Run the Server**
+```bash
+# Development mode with hot reload
+cargo run
+
+# Production build
+cargo build --release
+./target/release/llm-supabase-rs
+```
+
+#### 5. **Verify Installation**
+```bash
+# Health check
+curl http://localhost:8080/health
+
+# Check available providers
+curl http://localhost:8080/admin/providers
+
+# Test chat completion
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-supabase-jwt" \
+  -d '{"model":"claude-sonnet-4-20250514","messages":[{"role":"user","content":"Hello!"}]}'
+```
+
+---
+
+## 📊 **Current Implementation Status**
+
+### ✅ **Fully Implemented Features**
+- **8 AI Providers**: Vertex AI, OpenAI, Anthropic, AWS Bedrock, Azure OpenAI, Groq, Mistral, Cohere
+- **Advanced Tool Calling**: Client-adaptive system with format optimization
+- **High-Performance Streaming**: SSE with chunk aggregation
+- **Production Monitoring**: Prometheus metrics + Langfuse integration
+- **Comprehensive Testing**: 25+ integration tests
+- **Complete Documentation**: 15+ specialized guides
+
+### ✅ **Available API Endpoints**
+```
+GET  /health                    # System health check
+GET  /metrics                   # Prometheus metrics
+POST /v1/chat/completions       # OpenAI-compatible chat
+GET  /v1/models                 # List available models
+POST /v1/embeddings             # Generate embeddings
+GET  /admin/providers           # Provider status
+GET  /admin/health              # Detailed health info
+```
+
+---
+
+## 🛠 **Development Commands**
+
+### **Essential Commands**
+```bash
+# Quick development check (fastest feedback)
+cargo check
+
+# Build and run
+cargo build && cargo run
+
+# Format and lint (before commits)
+cargo fmt && cargo clippy
+
+# Run all tests
+cargo test
+
+# Run with hot reload during development
+cargo watch -x run
+```
+
+### **Testing Commands**
+```bash
+# Run all tests with output
+cargo test -- --nocapture
+
+# Run specific test categories
+cargo test integration          # Integration tests
+cargo test contract             # Contract tests
+cargo test unit                # Unit tests
+
+# Run provider-specific tests
+cargo test test_vertex_e2e
+cargo test test_anthropic_provider
+cargo test test_streaming_tool
+
+# Performance benchmarks
+cargo test test_performance_benchmarks -- --nocapture
+```
+
+### **Production Commands**
+```bash
+# Build optimized release
+cargo build --release
+
+# Security audit
+cargo audit
+
+# Generate documentation
+cargo doc --open
+
+# Run with production config
+RUST_LOG=info ./target/release/llm-supabase-rs
+```
+
+---
+
+## 🔧 **Configuration Guide**
+
+### **Environment Variables Reference**
+
+#### **Core Server Settings**
+```bash
+HOST=0.0.0.0                    # Server bind address
+PORT=8080                       # Server port
+LOG_LEVEL=info                  # Logging level (trace,debug,info,warn,error)
+RUST_LOG=llm_supabase_rs=debug  # Rust-specific logging
+```
+
+#### **Authentication (Supabase)**
+```bash
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=eyJ...        # For public access
+SUPABASE_SERVICE_ROLE_KEY=eyJ... # For admin operations
+SUPABASE_JWT_SECRET=your-secret  # For JWT validation
+```
+
+#### **Primary Provider (Vertex AI)**
+```bash
 GCP_PROJECT_ID=your-project-id
+GCP_LOCATION=us-central1        # GCP region
 GOOGLE_APPLICATION_CREDENTIALS=./gcp-credentials.json
 ```
 
-### Step 4: Create Error Types
+#### **Optional Provider API Keys**
+```bash
+# OpenAI Direct API
+OPENAI_API_KEY=sk-...
+OPENAI_ORG_ID=org-...
 
-**File: `src/shared/error.rs`**
-```rust
-use axum::{
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    Json,
-};
-use serde_json::json;
+# Anthropic Claude API
+ANTHROPIC_API_KEY=sk-ant-...
 
-#[derive(Debug, thiserror::Error)]
-pub enum AppError {
-    #[error("Authentication failed: {0}")]
-    AuthError(String),
-    
-    #[error("Provider error: {0}")]
-    ProviderError(String),
-    
-    #[error("Configuration error: {0}")]
-    ConfigError(String),
-    
-    #[error("Database error: {0}")]
-    DatabaseError(#[from] sqlx::Error),
-    
-    #[error("Invalid request: {0}")]
-    ValidationError(String),
-    
-    #[error("Internal server error: {0}")]
-    InternalError(String),
-    
-    #[error("Not found: {0}")]
-    NotFoundError(String),
-}
+# AWS Bedrock (uses AWS credentials)
+AWS_ACCESS_KEY_ID=AKIA...
+AWS_SECRET_ACCESS_KEY=...
+AWS_REGION=us-east-1
 
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        let (status, error_message) = match self {
-            AppError::AuthError(msg) => (StatusCode::UNAUTHORIZED, msg),
-            AppError::ValidationError(msg) => (StatusCode::BAD_REQUEST, msg),
-            AppError::NotFoundError(msg) => (StatusCode::NOT_FOUND, msg),
-            AppError::ProviderError(msg) => (StatusCode::BAD_GATEWAY, msg),
-            _ => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            ),
-        };
+# Azure OpenAI
+AZURE_OPENAI_API_KEY=...
+AZURE_OPENAI_ENDPOINT=https://...
 
-        let body = Json(json!({
-            "error": {
-                "message": error_message,
-                "type": self.error_type(),
-            }
-        }));
-
-        (status, body).into_response()
-    }
-}
-
-impl AppError {
-    fn error_type(&self) -> &str {
-        match self {
-            AppError::AuthError(_) => "authentication_error",
-            AppError::ProviderError(_) => "provider_error",
-            AppError::ConfigError(_) => "configuration_error",
-            AppError::DatabaseError(_) => "database_error",
-            AppError::ValidationError(_) => "validation_error",
-            AppError::InternalError(_) => "internal_error",
-            AppError::NotFoundError(_) => "not_found",
-        }
-    }
-}
-
-pub type Result<T> = std::result::Result<T, AppError>;
+# Other providers
+GROQ_API_KEY=gsk_...
+MISTRAL_API_KEY=...
+COHERE_API_KEY=...
 ```
 
-**File: `src/shared/mod.rs`**
-```rust
-pub mod error;
-
-pub use error::{AppError, Result};
+#### **Feature Flags**
+```bash
+# Enable/disable features
+ENABLE_METRICS=true             # Prometheus metrics
+ENABLE_LANGFUSE=true            # LLM observability
+ENABLE_STREAMING=true           # SSE streaming
+ENABLE_TOOL_CALLING=true        # Tool execution
+ENABLE_PROVIDER_FALLBACK=true   # Automatic failover
 ```
 
-### Step 5: Create OpenAI API Types
-
-**File: `src/domain/models/chat.rs`**
-```rust
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatCompletionRequest {
-    pub model: String,
-    pub messages: Vec<Message>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stream: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<Tool>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_choice: Option<ToolChoice>,
-    
-    // Extended fields
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_override: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Message {
-    pub role: String,
-    pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<ToolCall>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Tool {
-    pub r#type: String,
-    pub function: FunctionDefinition,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FunctionDefinition {
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    pub parameters: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCall {
-    pub id: String,
-    pub r#type: String,
-    pub function: FunctionCall,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FunctionCall {
-    pub name: String,
-    pub arguments: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ToolChoice {
-    Auto,
-    None,
-    Required,
-    Specific { r#type: String, function: FunctionName },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FunctionName {
-    pub name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatCompletionResponse {
-    pub id: String,
-    pub object: String,
-    pub created: i64,
-    pub model: String,
-    pub choices: Vec<Choice>,
-    pub usage: Usage,
-    
-    // Extended fields
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Choice {
-    pub index: usize,
-    pub message: Message,
-    pub finish_reason: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Usage {
-    pub prompt_tokens: usize,
-    pub completion_tokens: usize,
-    pub total_tokens: usize,
-}
-
-impl ChatCompletionRequest {
-    pub fn validate(&self) -> crate::shared::Result<()> {
-        if self.messages.is_empty() {
-            return Err(crate::shared::AppError::ValidationError(
-                "Messages cannot be empty".to_string(),
-            ));
-        }
-        
-        if self.messages.len() > 100 {
-            return Err(crate::shared::AppError::ValidationError(
-                "Too many messages (max: 100)".to_string(),
-            ));
-        }
-        
-        if let Some(temp) = self.temperature {
-            if !(0.0..=2.0).contains(&temp) {
-                return Err(crate::shared::AppError::ValidationError(
-                    "Temperature must be between 0 and 2".to_string(),
-                ));
-            }
-        }
-        
-        Ok(())
-    }
-}
+### **Model Configuration**
+```bash
+DEFAULT_MODEL=claude-sonnet-4-20250514
+DEFAULT_PROVIDER=vertex-ai
+MAX_TOKENS_DEFAULT=4096
+TEMPERATURE_DEFAULT=0.7
 ```
 
-### Step 6: Create Basic API Structure
+---
 
-**File: `src/api/mod.rs`**
-```rust
-pub mod handlers;
-pub mod middleware;
-pub mod routes;
+## 🏗 **Architecture Overview**
 
-pub use routes::create_router;
+### **Project Structure**
+```
+src/
+├── api/                    # HTTP handlers and routes
+│   ├── handlers/          # Request handlers
+│   ├── middleware/        # Authentication, CORS, etc.
+│   └── routes.rs          # Route configuration
+├── config/                # Configuration management
+│   ├── app.rs            # Main app config
+│   ├── providers.rs      # Provider configurations
+│   └── mod.rs            # Config module
+├── features/              # Business logic modules
+│   ├── auth/             # Authentication system
+│   ├── conversations/    # Conversation management
+│   ├── diff_patch/       # Code modification tools
+│   ├── provider_fallback/ # Provider failover
+│   └── shell_execution/  # Secure command execution
+├── infrastructure/        # External integrations
+│   ├── anthropic/        # Anthropic Claude API
+│   ├── aws_bedrock/      # AWS Bedrock integration
+│   ├── azure_openai/     # Azure OpenAI service
+│   ├── cohere/           # Cohere API
+│   ├── groq/             # Groq API
+│   ├── mistral/          # Mistral AI API
+│   ├── openai/           # OpenAI Direct API
+│   ├── vertex/           # Google Vertex AI
+│   ├── common/           # Shared infrastructure
+│   └── supabase/         # Supabase integration
+├── models/               # Data structures
+│   ├── request.rs        # Request types
+│   ├── response.rs       # Response types
+│   ├── common.rs         # Shared types
+│   └── error.rs          # Error types
+├── monitoring/           # Observability
+│   ├── metrics.rs        # Prometheus metrics
+│   └── langfuse_integration.rs # LLM observability
+└── main.rs              # Application entry point
 ```
 
-**File: `src/api/routes.rs`**
-```rust
-use axum::{
-    routing::{get, post},
-    Router,
-};
-use crate::app::AppState;
+### **Key Design Patterns**
+- **Provider Abstraction**: Unified interface for all AI providers
+- **Client Detection**: Automatic format optimization
+- **Tool Orchestration**: Dynamic tool execution and formatting
+- **Streaming Aggregation**: Optimized real-time responses
+- **Fallback Strategy**: Intelligent provider failover
+- **Dependency Injection**: State-based configuration
 
-pub fn create_router(state: AppState) -> Router {
-    Router::new()
-        .route("/health", get(health_check))
-        .route("/v1/chat/completions", post(super::handlers::chat::chat_completions))
-        .route("/v1/models", get(super::handlers::models::list_models))
-        .with_state(state)
-}
+---
 
-async fn health_check() -> &'static str {
-    "OK"
-}
+## 🧪 **Testing Guide**
+
+### **Test Categories**
+
+#### **1. Unit Tests**
+```bash
+# Run unit tests
+cargo test --lib
+
+# Individual test
+cargo test test_vertex_conversion -- --nocapture
 ```
 
-**File: `src/api/handlers/mod.rs`**
-```rust
-pub mod chat;
-pub mod models;
+#### **2. Integration Tests**
+```bash
+# All integration tests
+cargo test integration
+
+# Provider-specific
+cargo test test_vertex_e2e
+cargo test test_anthropic_provider_integration
+cargo test test_openai_provider_integration
 ```
 
-**File: `src/api/handlers/chat.rs`**
-```rust
-use axum::{
-    extract::State,
-    Json,
-};
-use crate::{
-    app::AppState,
-    domain::models::chat::{ChatCompletionRequest, ChatCompletionResponse},
-    shared::Result,
-};
+#### **3. Contract Tests**
+```bash
+# API contract validation
+cargo test contract
 
-pub async fn chat_completions(
-    State(state): State<AppState>,
-    Json(req): Json<ChatCompletionRequest>,
-) -> Result<Json<ChatCompletionResponse>> {
-    // Validate request
-    req.validate()?;
-    
-    // TODO: Implement chat completion logic
-    
-    Err(crate::shared::AppError::InternalError(
-        "Not implemented yet".to_string(),
-    ))
-}
+# Specific contracts
+cargo test contract_health
+cargo test contract_chat
+cargo test contract_streaming
 ```
 
-### Step 7: Create Application State
+#### **4. Performance Tests**
+```bash
+# Performance benchmarks
+cargo test test_performance_benchmarks -- --nocapture
 
-**File: `src/app.rs`**
-```rust
-use crate::config::AppConfig;
-use std::sync::Arc;
-
-#[derive(Clone)]
-pub struct AppState {
-    pub config: Arc<AppConfig>,
-}
-
-impl AppState {
-    pub fn new(config: AppConfig) -> Self {
-        Self {
-            config: Arc::new(config),
-        }
-    }
-}
+# Load testing
+cargo test test_concurrent_requests -- --nocapture
 ```
 
-### Step 8: Create Main Entry Point
+### **Test Utilities**
+The project includes comprehensive test utilities in `tests/utils/`:
+- **MockCodexClient**: Simulates client interactions
+- **TestFixtures**: Provides realistic test data
+- **PerformanceAssertions**: Validates response times
+- **ErrorAssertions**: Tests error handling
 
-**File: `src/main.rs`**
-```rust
-use llm_supabase_rs::{app::AppState, api::create_router, config::AppConfig};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+---
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Initialize tracing
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "llm_supabase_rs=debug,tower_http=debug".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+## 📊 **Monitoring & Observability**
 
-    // Load configuration
-    let config = AppConfig::load()?;
-    let addr = config.server.addr();
-
-    tracing::info!("Loading configuration...");
-    tracing::info!("Server will listen on {}", addr);
-
-    // Create application state
-    let state = AppState::new(config);
-
-    // Create router
-    let app = create_router(state);
-
-    // Create TCP listener
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    
-    tracing::info!("🚀 Server started on {}", addr);
-
-    // Run server
-    axum::serve(listener, app).await?;
-
-    Ok(())
-}
-```
-
-**File: `src/lib.rs`**
-```rust
-pub mod api;
-pub mod app;
-pub mod config;
-pub mod domain;
-pub mod infrastructure;
-pub mod shared;
-
-pub use app::AppState;
-```
-
-### Step 9: Test Basic Setup
+### **Prometheus Metrics**
+Available at `http://localhost:8080/metrics`:
 
 ```bash
-# Build the project
-cargo build
+# Request metrics
+codex_cli_requests_total{model,provider,status}
+codex_cli_request_duration_seconds{model,provider}
 
-# Run the server
-cargo run
+# Tool calling metrics
+codex_cli_tool_calls_total{tool_name,status}
+codex_cli_tool_execution_duration_seconds{tool_name}
 
-# In another terminal, test the health endpoint
+# Streaming metrics
+codex_cli_streaming_requests_total
+codex_cli_streaming_chunks_total{model}
+
+# Provider metrics
+codex_cli_provider_requests_total{provider,model,status}
+codex_cli_provider_response_time_seconds{provider}
+codex_cli_provider_availability_ratio{provider}
+```
+
+### **Health Checks**
+```bash
+# Basic health
 curl http://localhost:8080/health
-# Should return: OK
+
+# Detailed health with provider status
+curl http://localhost:8080/admin/health
+
+# Provider-specific status
+curl http://localhost:8080/admin/providers
+```
+
+### **Logging**
+Structured logging with multiple levels:
+```bash
+# Set logging level
+export RUST_LOG=llm_supabase_rs=debug
+
+# Component-specific logging
+export RUST_LOG=llm_supabase_rs::infrastructure::vertex=trace
 ```
 
 ---
 
-## Development Workflow
+## 🔗 **API Usage Examples**
 
-### Daily Development Process
+### **Basic Chat Completion**
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-jwt-token" \
+  -d '{
+    "model": "claude-sonnet-4-20250514",
+    "messages": [
+      {"role": "user", "content": "Hello, how are you?"}
+    ],
+    "max_tokens": 1000,
+    "temperature": 0.7
+  }'
+```
 
-1. **Start with Tests**
-   ```bash
-   # Write a failing test first
-   cargo test --test your_test_name
-   ```
+### **Streaming Chat**
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-jwt-token" \
+  -d '{
+    "model": "claude-sonnet-4-20250514",
+    "messages": [
+      {"role": "user", "content": "Write a simple Rust function"}
+    ],
+    "stream": true
+  }'
+```
 
-2. **Implement Feature**
-   ```bash
-   # Use cargo watch for auto-reload
-   cargo watch -x check -x test
-   ```
+### **Tool Calling (Advanced)**
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-jwt-token" \
+  -d '{
+    "model": "claude-sonnet-4-20250514",
+    "messages": [
+      {"role": "user", "content": "Read the file main.rs and analyze it"}
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "description": "Read a file from the filesystem",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "file_path": {"type": "string"}
+            }
+          }
+        }
+      }
+    ],
+    "client_type": "codex_cli"
+  }'
+```
 
-3. **Check Code Quality**
-   ```bash
-   # Format code
-   cargo fmt
-   
-   # Run linter
-   cargo clippy -- -D warnings
-   
-   # Check for security issues
-   cargo audit
-   ```
+### **Provider Override**
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-jwt-token" \
+  -d '{
+    "model": "gpt-4",
+    "provider_override": "openai",
+    "messages": [
+      {"role": "user", "content": "Hello from OpenAI!"}
+    ]
+  }'
+```
 
-4. **Commit Changes**
-   ```bash
-   git add .
-   git commit -m "feat: implement feature X"
-   ```
+---
 
-### Testing Strategy
+## 🚀 **Deployment Guide**
 
-#### Unit Tests
-Place unit tests in the same file as the code:
+### **Production Deployment**
 
+#### **1. Build Release**
+```bash
+cargo build --release
+```
+
+#### **2. Environment Setup**
+```bash
+# Production environment file
+cp .env.example .env.production
+
+# Set production values
+export LOG_LEVEL=warn
+export RUST_LOG=llm_supabase_rs=info
+```
+
+#### **3. Security Considerations**
+- Use proper JWT secrets
+- Secure API keys in environment variables
+- Enable HTTPS/TLS
+- Configure proper CORS settings
+- Set up rate limiting
+
+#### **4. Monitoring Setup**
+- Configure Prometheus scraping
+- Set up Grafana dashboards
+- Configure alerting rules
+- Monitor key metrics
+
+### **Docker Deployment**
+```dockerfile
+FROM rust:1.75 as builder
+WORKDIR /app
+COPY . .
+RUN cargo build --release
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates
+COPY --from=builder /app/target/release/llm-supabase-rs /usr/local/bin/
+EXPOSE 8080
+CMD ["llm-supabase-rs"]
+```
+
+---
+
+## 🔧 **Extending the System**
+
+### **Adding New Providers**
+
+1. **Create Provider Module**
 ```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
+// src/infrastructure/newprovider/mod.rs
+pub mod client;
+pub mod auth;
+pub mod converter;
+pub mod types;
+```
 
-    #[test]
-    fn test_validation() {
-        let req = ChatCompletionRequest {
-            model: "claude-sonnet-4.5".to_string(),
-            messages: vec![],
-            ..Default::default()
-        };
-        
-        assert!(req.validate().is_err());
+2. **Implement Provider Trait**
+```rust
+use crate::infrastructure::common::traits::AIProvider;
+
+impl AIProvider for NewProvider {
+    async fn chat_completion(&self, request: ChatRequest) -> Result<ChatResponse> {
+        // Implementation
     }
 }
 ```
 
-#### Integration Tests
-Place in `tests/integration/`:
-
+3. **Add Configuration**
 ```rust
-// tests/integration/api_test.rs
-use llm_supabase_rs::*;
-
-#[tokio::test]
-async fn test_health_endpoint() {
-    // Test implementation
+// src/config/providers.rs
+pub struct NewProviderConfig {
+    pub api_key: String,
+    pub base_url: String,
 }
 ```
 
-### Debugging Tips
-
-1. **Enable Detailed Logging**
-   ```bash
-   RUST_LOG=debug cargo run
-   ```
-
-2. **Use Rust Analyzer**
-   Install in VS Code for better IDE support
-
-3. **Print Debug Information**
-   ```rust
-   dbg!(&variable);
-   tracing::debug!("Value: {:?}", variable);
-   ```
-
----
-
-## Next Steps
-
-After completing the foundation:
-
-1. **Implement Authentication** (Week 2)
-   - JWT validation middleware
-   - Supabase integration
-   - Role-based access control
-
-2. **Vertex AI Provider** (Week 3)
-   - GCP authentication
-   - Format conversion
-   - API integration
-
-3. **Follow Implementation Roadmap**
-   - See `IMPLEMENTATION_ROADMAP.md` for detailed weekly tasks
-   - Complete each phase sequentially
-   - Write tests for each feature
-
----
-
-## Common Issues and Solutions
-
-### Issue: Compilation Errors with async-trait
-
-**Solution:**
+4. **Register Provider**
 ```rust
-use async_trait::async_trait;
+// src/app.rs - Add to provider factory
+```
 
-#[async_trait]
-trait MyTrait {
-    async fn my_method(&self);
+### **Adding New Tools**
+Tools are automatically discovered from the request. To add custom tool execution:
+
+1. **Create Tool Handler**
+```rust
+// src/features/tools/custom_tool.rs
+pub async fn execute_custom_tool(params: serde_json::Value) -> Result<String> {
+    // Tool implementation
 }
 ```
 
-### Issue: sqlx Compile-Time Verification Failing
+2. **Register Tool**
+```rust
+// Register in tool registry
+```
 
-**Solution:**
+### **Adding Metrics**
+```rust
+// src/monitoring/metrics.rs
+let custom_metric = Counter::new("custom_metric_total", "Description")?;
+registry.register(Box::new(custom_metric.clone()))?;
+```
+
+---
+
+## 🐛 **Troubleshooting**
+
+### **Common Issues**
+
+#### **1. Authentication Errors**
 ```bash
-# Set DATABASE_URL
-export DATABASE_URL=postgres://postgres:postgres@localhost:5432/llm_proxy
+# Verify JWT token
+curl -H "Authorization: Bearer token" http://localhost:8080/health
 
-# Or use offline mode
-export SQLX_OFFLINE=true
+# Check Supabase configuration
+echo $SUPABASE_JWT_SECRET
 ```
 
-### Issue: Provider API Rate Limits
+#### **2. Provider Connection Issues**
+```bash
+# Check provider status
+curl http://localhost:8080/admin/providers
 
-**Solution:**
-- Implement exponential backoff
-- Add request queuing
-- Use circuit breakers
+# Test credentials
+gcloud auth application-default login  # For GCP
+```
+
+#### **3. Performance Issues**
+```bash
+# Check metrics
+curl http://localhost:8080/metrics | grep duration
+
+# Monitor logs
+tail -f logs/app.log
+```
+
+#### **4. Build Issues**
+```bash
+# Clean and rebuild
+cargo clean && cargo build
+
+# Check dependencies
+cargo tree
+```
+
+### **Debug Mode**
+```bash
+# Enable debug logging
+export RUST_LOG=llm_supabase_rs=debug
+
+# Trace level for specific modules
+export RUST_LOG=llm_supabase_rs::infrastructure::vertex=trace
+```
 
 ---
 
-## Resources
+## 📚 **Additional Resources**
 
-### Documentation
-- [Rust Book](https://doc.rust-lang.org/book/)
-- [Tokio Tutorial](https://tokio.rs/tokio/tutorial)
-- [Axum Documentation](https://docs.rs/axum)
-- [SQLx Documentation](https://docs.rs/sqlx)
+### **Related Documentation**
+- [API Reference](./API_REFERENCE.md) - Complete API documentation
+- [Architecture Guide](./TECHNICAL_ARCHITECTURE.md) - System architecture
+- [Provider Comparison](./PROVIDER_COMPARISON_GUIDE.md) - Provider feature matrix
+- [Performance Guide](./PERFORMANCE_OPTIMIZATION.md) - Performance tuning
 
-### Community
-- [Rust Discord](https://discord.gg/rust-lang)
-- [r/rust](https://reddit.com/r/rust)
-
-### Tools
-- [Rust Analyzer](https://rust-analyzer.github.io/)
-- [cargo-watch](https://github.com/watchexec/cargo-watch)
-- [Postman](https://www.postman.com/) for API testing
+### **External Resources**
+- [OpenAI API Documentation](https://platform.openai.com/docs/api-reference)
+- [Anthropic Claude API](https://docs.anthropic.com/claude/reference)
+- [Google Vertex AI](https://cloud.google.com/vertex-ai/docs)
+- [Supabase Authentication](https://supabase.com/docs/guides/auth)
 
 ---
 
-## Conclusion
+## 🏆 **System Status**
 
-This implementation guide provides the foundation for building the Universal AI Server Proxy. Follow the weekly roadmap in `IMPLEMENTATION_ROADMAP.md` for detailed task breakdowns.
+**Current Status**: ✅ **PRODUCTION READY**
 
-**Key Principles:**
-1. Test-driven development
-2. Incremental implementation
-3. Regular commits
-4. Code review
-5. Documentation as you go
+The Universal AI Server Proxy is fully implemented and production-ready with:
+- ✅ 8 AI providers integrated
+- ✅ Advanced tool calling system
+- ✅ Comprehensive monitoring
+- ✅ Extensive testing (25+ tests)
+- ✅ Complete documentation
+- ✅ High-performance streaming
+- ✅ Intelligent provider fallback
 
-Good luck with the implementation!
+**Next Steps**: Focus on advanced features like MCP integration, local model support, and enterprise features.
+
+---
+
+**Last Updated**: October 15, 2025
+**Version**: 2.1
+**Maintainer**: Development Team

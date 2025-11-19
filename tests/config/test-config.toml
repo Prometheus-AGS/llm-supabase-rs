@@ -1,0 +1,110 @@
+# Comprehensive Test Configuration
+# This file configures the integration testing framework for different environments
+
+[environment]
+# Test execution mode: local, ci, docker, production
+mode = "local"
+log_level = "debug"
+timeout_seconds = 30
+
+[database]
+# Test database configuration
+url = "postgresql://postgres:postgres@localhost:5432/llm_supabase_test"
+pool_size = 10
+connection_timeout = 30
+
+[mock_providers]
+# Mock provider configuration for testing
+vertex_enabled = true
+vertex_delay_ms = 150
+vertex_failure_rate = 0.0
+
+groq_enabled = true
+groq_delay_ms = 50
+groq_failure_rate = 0.0
+
+failing_enabled = true
+failing_failure_rate = 1.0
+
+[performance]
+# Performance test configuration
+response_time_max_ms = 10000
+concurrent_clients = 5
+load_test_duration_seconds = 60
+throughput_min_rps = 0.5
+
+# Performance thresholds
+simple_request_max_ms = 1000
+code_generation_max_ms = 3000
+streaming_max_ms = 15000
+tool_execution_max_ms = 5000
+
+[security]
+# Security test configuration
+validate_file_paths = true
+block_dangerous_commands = true
+sanitize_patch_content = true
+max_patch_size_bytes = 102400  # 100KB
+
+[codex_cli]
+# Codex CLI simulation configuration
+model = "claude-4-sonnet-20250514"
+max_tokens = 4096
+temperature = 0.7
+conversation_timeout_minutes = 30
+
+# Tools available to Codex CLI
+tools = [
+    "apply_patch",
+    "read_file", 
+    "search_files",
+    "write_file"
+]
+
+[streaming]
+# Streaming test configuration
+chunk_size_bytes = 1024
+timeout_seconds = 30
+validate_sse_format = true
+require_done_marker = true
+
+[conversations]
+# Multi-turn conversation testing
+max_conversation_length = 50
+context_preservation_validation = true
+isolation_testing = true
+expiration_hours = 24
+
+[fallback]
+# Provider fallback testing
+enabled = true
+health_check_interval_seconds = 30
+circuit_breaker_threshold = 5
+retry_max_attempts = 3
+retry_exponential_base = 2.0
+
+[reporting]
+# Test result reporting
+generate_html_report = true
+generate_json_metrics = true
+save_performance_data = true
+output_directory = "tests/results"
+
+# CI/CD integration
+notify_on_failure = true
+create_github_issues = false
+slack_webhook_url = ""
+
+[artifacts]
+# Test artifact management
+save_logs = true
+save_request_responses = true
+save_performance_metrics = true
+retention_days = 30
+
+[debugging]
+# Debug configuration for test development
+verbose_output = true
+save_intermediate_state = true
+enable_trace_logging = false
+capture_network_traffic = false

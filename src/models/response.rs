@@ -132,6 +132,62 @@ pub struct TopTokenLogProb {
     pub bytes: Vec<u8>,
 }
 
+/// Alias for ChatMessage - used by providers for consistency
+pub type ChatCompletionMessage = ChatMessage;
+
+/// Alias for ChatCompletionChunkChoice - used in streaming providers
+pub type ChunkChoice = ChatCompletionChunkChoice;
+
+/// Alias for ChatMessage - represents delta content in streaming
+pub type ChunkDelta = ChatMessage;
+
+/// Tool call structure for streaming chunks
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkToolCall {
+    /// Tool call index in the array
+    pub index: u32,
+    /// Tool call ID
+    pub id: String,
+    /// Tool type, always "function"
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    /// Function call details
+    pub function: Option<ChunkFunction>,
+}
+
+/// Function call structure for streaming chunks
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkFunction {
+    /// Function name
+    pub name: String,
+    /// Function arguments as JSON string
+    pub arguments: String,
+}
+
+/// Function delta for streaming (alias for ChunkFunction)
+pub type FunctionDelta = ChunkFunction;
+
+/// Streaming choice structure (alias for better provider compatibility)
+pub type ChatCompletionStreamChoice = ChatCompletionChunkChoice;
+
+/// Delta structure for streaming (alias for ChatMessage)
+pub type Delta = ChatMessage;
+
+/// Stream delta type (alias for ChatMessage)
+pub type ChatCompletionStreamDelta = ChatMessage;
+
+/// Choice structure for responses
+pub type Choice = ChatCompletionChoice;
+
+/// Assistant message structure (alias for ChatMessage)
+pub type AssistantMessage = ChatMessage;
+
+/// Tool call delta for streaming
+pub type ToolCallDelta = crate::shared::types::ToolCallDelta;
+
+/// Message structure (alias for ChatMessage)
+pub type Message = ChatMessage;
+
 /// Models list response structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelsResponse {

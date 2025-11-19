@@ -294,6 +294,188 @@ impl ToolCallManager {
     }
 }
 
+/// Shell execution manager integration with tool calling
+pub struct ShellToolExecutor {
+    shell_manager: crate::features::shell_execution::ShellExecutionManager,
+}
+
+impl ShellToolExecutor {
+    /// Create a new shell tool executor
+    pub fn new() -> Self {
+        let config = crate::features::shell_execution::ShellConfig::default();
+        let shell_manager = crate::features::shell_execution::ShellExecutionManager::new(config);
+        Self { shell_manager }
+    }
+
+    /// Create with custom shell configuration
+    pub fn with_config(config: crate::features::shell_execution::ShellConfig) -> Self {
+        let shell_manager = crate::features::shell_execution::ShellExecutionManager::new(config);
+        Self { shell_manager }
+    }
+
+    /// Execute a tool call using shell execution
+    pub async fn execute_tool_call(&self, tool_call: &UnifiedToolCall) -> Result<ToolCallResult, anyhow::Error> {
+        // Convert unified tool call to shell execution format
+        let mut cmd_array = vec![tool_call.function_name.clone()];
+        let args = self.parse_arguments_to_array(&tool_call.arguments)?;
+        cmd_array.extend(args);
+        
+        let tool_call_json = serde_json::json!({
+            "cmd": cmd_array
+        });
+
+        // Execute the command
+        match self.shell_manager.execute_from_tool_call(&tool_call_json).await {
+            Ok(result) => {
+                Ok(ToolCallResult {
+                    tool_call_id: tool_call.id.clone(),
+                    content: if result.success {
+                        result.stdout
+                    } else {
+                        format!("Error: {}", result.stderr)
+                    },
+                    success: result.success,
+                    error: if result.success { None } else { Some(result.stderr) },
+                })
+            }
+            Err(e) => {
+                Ok(ToolCallResult {
+                    tool_call_id: tool_call.id.clone(),
+                    content: String::new(),
+                    success: false,
+                    error: Some(e.to_string()),
+                })
+            }
+        }
+    }
+
+    /// Parse tool call arguments to array format expected by shell executor
+    fn parse_arguments_to_array(&self, arguments: &Value) -> Result<Vec<String>, anyhow::Error> {
+        match arguments {
+            Value::Object(obj) => {
+                // For apply_patch, we expect a specific format
+                if let Some(patch_content) = obj.get("patch_content") {
+                    if let Some(patch_str) = patch_content.as_str() {
+                        return Ok(vec![patch_str.to_string()]);
+                    }
+                }
+                
+                // For other commands, convert object to key=value pairs
+                let mut args = Vec::new();
+                for (key, value) in obj {
+                    match value {
+                        Value::String(s) => args.push(format!("{}={}", key, s)),
+                        Value::Number(n) => args.push(format!("{}={}", key, n)),
+                        Value::Bool(b) => args.push(format!("{}={}", key, b)),
+                        _ => args.push(format!("{}={}", key, value.to_string())),
+                    }
+                }
+                Ok(args)
+            }
+            Value::Array(arr) => {
+                let mut args = Vec::new();
+                for item in arr {
+                    match item {
+                        Value::String(s) => args.push(s.clone()),
+                        _ => args.push(item.to_string()),
+                    }
+                }
+                Ok(args)
+            }
+            Value::String(s) => Ok(vec![s.clone()]),
+            _ => Ok(vec![arguments.to_string()]),
+        }
+    }
+}
+
+impl Default for ShellToolExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Enhanced tool call manager with shell execution support
+pub struct EnhancedToolCallManager {
+    base_manager: ToolCallManager,
+    shell_executor: ShellToolExecutor,
+}
+
+impl EnhancedToolCallManager {
+    /// Create a new enhanced tool call manager
+    pub fn new(converter: Box<dyn ToolCallConverter + Send + Sync>) -> Self {
+        Self {
+            base_manager: ToolCallManager::new(converter),
+            shell_executor: ShellToolExecutor::new(),
+        }
+    }
+
+    /// Create for OpenAI format with shell support
+    pub fn openai_with_shell() -> Self {
+        Self::new(Box::new(OpenAIToolConverter))
+    }
+
+    /// Create for Claude format with shell support
+    pub fn claude_with_shell() -> Self {
+        Self::new(Box::new(ClaudeToolConverter))
+    }
+
+    /// Process tool calls and execute shell commands
+    pub async fn process_and_execute_tool_calls(
+        &mut self,
+        provider_data: &Value,
+        request_id: String
+    ) -> Result<Option<Vec<ToolCallResult>>, anyhow::Error> {
+        // First, use base manager to process tool calls
+        if let Some(tool_calls) = self.base_manager.process_tool_calls(provider_data, request_id)? {
+            let mut results = Vec::new();
+            
+            for tool_call in &tool_calls {
+                // Check if this is a shell command
+                if self.is_shell_command(&tool_call.function_name) {
+                    // Execute using shell executor
+                    let result = self.shell_executor.execute_tool_call(tool_call).await?;
+                    results.push(result);
+                } else {
+                    // Create a placeholder result for non-shell commands
+                    results.push(ToolCallResult {
+                        tool_call_id: tool_call.id.clone(),
+                        content: format!("Tool '{}' not implemented", tool_call.function_name),
+                        success: false,
+                        error: Some("Tool not implemented".to_string()),
+                    });
+                }
+            }
+            
+            Ok(Some(results))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Check if a function name represents a shell command
+    fn is_shell_command(&self, function_name: &str) -> bool {
+        matches!(function_name,
+            "apply_patch" |
+            "read_file" |
+            "write_file" |
+            "copy_file" |
+            "move_file" |
+            "create_directory" |
+            "file_exists"
+        )
+    }
+
+    /// Get the underlying base manager
+    pub fn base_manager(&self) -> &ToolCallManager {
+        &self.base_manager
+    }
+
+    /// Get mutable reference to base manager
+    pub fn base_manager_mut(&mut self) -> &mut ToolCallManager {
+        &mut self.base_manager
+    }
+}
+
 /// Utility functions for tool calling
 pub mod utils {
     use super::*;

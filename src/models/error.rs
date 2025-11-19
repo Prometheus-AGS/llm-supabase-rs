@@ -3,6 +3,10 @@
 // OpenAI API compatible error response models
 
 use serde::{Deserialize, Serialize};
+use std::time::SystemTime;
+
+// Import provider fallback types
+use crate::features::provider_fallback::models::{Provider, ProviderErrorType};
 
 /// OpenAI API error response structure
 /// Matches the exact format returned by OpenAI API for all error conditions
@@ -269,6 +273,135 @@ impl ErrorResponse {
         Self::overloaded("AI provider is temporarily unavailable. Please try again later.".to_string())
     }
 
+    /// Create error from provider-specific error type
+    pub fn from_provider_error(provider: Provider, error: ProviderErrorType) -> Self {
+        match error {
+            ProviderErrorType::Authentication => {
+                Self::authentication_code(
+                    format!("Authentication failed with {}", provider.display_name()),
+                    "provider_authentication_failed".to_string(),
+                )
+            }
+            ProviderErrorType::Authorization => {
+                Self::permission(format!(
+                    "Insufficient permissions for {} provider",
+                    provider.display_name()
+                ))
+            }
+            ProviderErrorType::RateLimit { reset_time } => {
+                let reset_seconds = reset_time
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                Self::full(
+                    ErrorType::RateLimitError,
+                    format!(
+                        "Rate limit exceeded for {}. Reset at: {}",
+                        provider.display_name(),
+                        reset_seconds
+                    ),
+                    Some("rate_limit_exceeded".to_string()),
+                    None,
+                )
+            }
+            ProviderErrorType::QuotaExceeded => {
+                Self::rate_limit(format!(
+                    "Quota exceeded for {} provider",
+                    provider.display_name()
+                ))
+            }
+            ProviderErrorType::ModelNotAvailable => {
+                Self::not_found(format!(
+                    "Requested model is not available on {}",
+                    provider.display_name()
+                ))
+            }
+            ProviderErrorType::ServiceUnavailable => {
+                Self::overloaded(format!(
+                    "{} service is temporarily unavailable",
+                    provider.display_name()
+                ))
+            }
+            ProviderErrorType::Timeout => {
+                Self::timeout(format!(
+                    "Request to {} timed out",
+                    provider.display_name()
+                ))
+            }
+            ProviderErrorType::NetworkError => {
+                Self::server(format!(
+                    "Network error communicating with {}",
+                    provider.display_name()
+                ))
+            }
+            ProviderErrorType::InvalidRequest => {
+                Self::invalid_request(format!(
+                    "Invalid request format for {}",
+                    provider.display_name()
+                ))
+            }
+            ProviderErrorType::InternalError => {
+                Self::server(format!(
+                    "Internal error in {} provider",
+                    provider.display_name()
+                ))
+            }
+            ProviderErrorType::Unknown { message } => {
+                Self::server(format!(
+                    "Unknown error in {}: {}",
+                    provider.display_name(),
+                    message
+                ))
+            }
+        }
+    }
+
+    /// Provider fallback exhausted error
+    pub fn fallback_exhausted<S: Into<String>>(last_errors: Vec<(Provider, ProviderErrorType)>) -> Self {
+        let error_summary: Vec<String> = last_errors
+            .iter()
+            .map(|(provider, error)| {
+                format!("{}: {:?}", provider.display_name(), error)
+            })
+            .collect();
+
+        Self::overloaded(format!(
+            "All providers failed. Last errors: [{}]",
+            error_summary.join(", ")
+        ))
+    }
+
+    /// Circuit breaker open error
+    pub fn circuit_breaker_open<S: Into<String>>(provider: Provider) -> Self {
+        Self::overloaded(format!(
+            "{} is currently unavailable due to repeated failures (circuit breaker open)",
+            provider.display_name()
+        ))
+    }
+
+    /// Provider routing error
+    pub fn provider_routing_failed<S: Into<String>>(reason: S) -> Self {
+        Self::server(format!("Provider routing failed: {}", reason.into()))
+    }
+
+    /// Fallback configuration error
+    pub fn fallback_config_error<S: Into<String>>(details: S) -> Self {
+        Self::server(format!("Fallback configuration error: {}", details.into()))
+    }
+
+    /// Model mapping error (when requested model isn't available on selected provider)
+    pub fn model_mapping_error<S: Into<String>>(requested_model: S, provider: Provider, available_model: S) -> Self {
+        Self::invalid_request_param(
+            format!(
+                "Model '{}' not available on {}. Using '{}' instead",
+                requested_model.into(),
+                provider.display_name(),
+                available_model.into()
+            ),
+            "model".to_string(),
+        )
+    }
+
     /// Get the HTTP status code for this error type
     pub fn status_code(&self) -> u16 {
         match self.error.error_type {
@@ -425,5 +558,80 @@ mod tests {
 
         assert!(display_str.contains("invalid_request_error"));
         assert!(display_str.contains("Test message"));
+    }
+
+    #[test]
+    fn test_provider_error_conversion() {
+        use crate::features::provider_fallback::models::{Provider, ProviderErrorType};
+        use std::time::SystemTime;
+
+        // Test authentication error
+        let auth_error = ErrorResponse::from_provider_error(
+            Provider::VertexAI,
+            ProviderErrorType::Authentication,
+        );
+        assert_eq!(auth_error.status_code(), 401);
+        assert!(auth_error.error.message.contains("Authentication failed"));
+        assert!(auth_error.error.message.contains("Google Vertex AI"));
+
+        // Test rate limit error
+        let rate_limit_error = ErrorResponse::from_provider_error(
+            Provider::Groq,
+            ProviderErrorType::RateLimit {
+                reset_time: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1700000000),
+            },
+        );
+        assert_eq!(rate_limit_error.status_code(), 429);
+        assert!(rate_limit_error.error.message.contains("Rate limit exceeded"));
+        assert!(rate_limit_error.error.message.contains("Groq"));
+
+        // Test service unavailable
+        let unavailable_error = ErrorResponse::from_provider_error(
+            Provider::VertexAI,
+            ProviderErrorType::ServiceUnavailable,
+        );
+        assert_eq!(unavailable_error.status_code(), 503);
+        assert!(unavailable_error.error.message.contains("temporarily unavailable"));
+    }
+
+    #[test]
+    fn test_fallback_exhausted_error() {
+        use crate::features::provider_fallback::models::{Provider, ProviderErrorType};
+
+        let last_errors = vec![
+            (Provider::VertexAI, ProviderErrorType::Timeout),
+            (Provider::Groq, ProviderErrorType::ServiceUnavailable),
+        ];
+
+        let error = ErrorResponse::fallback_exhausted(last_errors);
+        assert_eq!(error.status_code(), 503);
+        assert!(error.error.message.contains("All providers failed"));
+        assert!(error.error.message.contains("Google Vertex AI"));
+        assert!(error.error.message.contains("Groq"));
+    }
+
+    #[test]
+    fn test_circuit_breaker_error() {
+        use crate::features::provider_fallback::models::Provider;
+
+        let error = ErrorResponse::circuit_breaker_open(Provider::VertexAI);
+        assert_eq!(error.status_code(), 503);
+        assert!(error.error.message.contains("circuit breaker open"));
+        assert!(error.error.message.contains("Google Vertex AI"));
+    }
+
+    #[test]
+    fn test_model_mapping_error() {
+        use crate::features::provider_fallback::models::Provider;
+
+        let error = ErrorResponse::model_mapping_error(
+            "gpt-4",
+            Provider::VertexAI,
+            "claude-3-5-sonnet@20241022",
+        );
+        assert_eq!(error.status_code(), 400);
+        assert_eq!(error.error.param, Some("model".to_string()));
+        assert!(error.error.message.contains("gpt-4"));
+        assert!(error.error.message.contains("claude-3-5-sonnet@20241022"));
     }
 }

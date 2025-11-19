@@ -96,7 +96,21 @@ mod tests {
                 default_model: "claude-sonnet-4-5@20250929".to_string(),
             },
             embedding: EmbeddingConfig::default(),
-            model_cache_dir: "./models".to_string(),
+            model_cache_dir: "/tmp/models".to_string(),
+            fallback: crate::config::app::FallbackConfigExt {
+                enabled: true,
+                provider_priority: vec!["vertex".to_string(), "groq".to_string()],
+                retry_max_attempts: 3,
+                retry_base_delay_ms: 100,
+                retry_max_delay_ms: 5000,
+                retry_exponential_base: 2.0,
+                retry_jitter: true,
+                circuit_breaker_failure_threshold: 5,
+                circuit_breaker_timeout_seconds: 60,
+                circuit_breaker_success_threshold: 3,
+                health_check_interval_seconds: 30,
+                provider_timeout_seconds: 30,
+            },
         }
     }
 

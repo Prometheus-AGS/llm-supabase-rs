@@ -5,6 +5,7 @@ use crate::api::handlers::{
 };
 use crate::config::{AppConfig, app::AppStateHealth, providers::{VertexAiConfig, VertexAuthConfig, VertexAuthMethod}};
 use crate::features::auth::AuthMiddleware;
+use crate::features::conversations::ConversationManager;
 use crate::infrastructure::{SupabaseClient, VertexAIClient};
 use crate::shared::{AppError, AppResult};
 
@@ -34,6 +35,7 @@ pub struct AppState {
     pub config: AppConfig,
     pub vertex_client: Arc<VertexAIClient>,
     pub supabase_client: Arc<SupabaseClient>,
+    pub conversation_manager: Arc<ConversationManager>,
     pub health: AppStateHealth,
 }
 
@@ -93,10 +95,17 @@ impl App {
     pub async fn run(self) -> AppResult<()> {
         let addr = SocketAddr::from(([0, 0, 0, 0], self.config.port));
 
+        // Initialize conversation manager
+        let conversation_manager = Arc::new(ConversationManager::new());
+        
+        // Start the cleanup task for expired conversations
+        conversation_manager.start_cleanup_task().await;
+        
         let app_state = AppState {
             config: self.config.clone(),
             vertex_client: self.vertex_client.clone(),
             supabase_client: self.supabase_client.clone(),
+            conversation_manager,
             health: AppStateHealth::new(&self.config),
         };
 
@@ -238,6 +247,7 @@ mod tests {
             },
             embedding: EmbeddingConfig::default(),
             model_cache_dir: "./models".to_string(),
+            fallback: crate::config::app::FallbackConfigExt::default(),
         }
     }
 

@@ -1,0 +1,284 @@
+# Docker Compose configuration for Codex CLI Integration Testing
+# Provides complete testing environment with all dependencies including private Langfuse
+
+version: '3.8'
+
+services:
+  # PostgreSQL database for conversation storage testing
+  postgres:
+    image: postgres:13-alpine
+    environment:
+      POSTGRES_DB: llm_supabase_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL database for Langfuse
+  langfuse-db:
+    image: postgres:13-alpine
+    environment:
+      POSTGRES_DB: langfuse
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse_password
+    ports:
+      - "5433:5432"
+    volumes:
+      - langfuse_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Private Langfuse server for LLM observability
+  langfuse-server:
+    image: langfuse/langfuse:latest
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      # Database configuration
+      DATABASE_URL: postgresql://langfuse:langfuse_password@langfuse-db:5432/langfuse
+      
+      # Langfuse configuration
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: langfuse_secret_key_change_in_production
+      SALT: salt_change_in_production
+      
+      # Auth configuration
+      AUTH_DISABLE_USERNAME_PASSWORD: false
+      AUTH_DISABLE_SIGNUP: false
+      
+      # Features
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: true
+      
+      # Telemetry (disable for private deployment)
+      TELEMETRY_ENABLED: false
+      
+      # Hostname
+      HOSTNAME: langfuse-server
+    volumes:
+      - langfuse_uploads:/app/uploads
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/public/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis for caching and session management testing
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Main test runner container
+  integration-tests:
+    build:
+      context: ../../
+      dockerfile: tests/docker/Dockerfile.test
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      langfuse-server:
+        condition: service_healthy
+    environment:
+      # Database configuration
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/llm_supabase_test
+      
+      # Redis configuration
+      REDIS_URL: redis://redis:6379
+      
+      # Langfuse configuration (private instance)
+      LANGFUSE_BASE_URL: http://langfuse-server:3000
+      LANGFUSE_PUBLIC_KEY: pk_lf_test_public_key
+      LANGFUSE_SECRET_KEY: sk_lf_test_secret_key
+      
+      # Test configuration
+      TEST_MODE: docker
+      RUST_LOG: debug
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      
+      # Mock provider configuration
+      MOCK_VERTEX_ENABLED: "true"
+      MOCK_GROQ_ENABLED: "true"
+      
+      # Test timing configuration
+      TEST_TIMEOUT_SECONDS: 30
+      PERFORMANCE_TEST_DURATION_SECONDS: 60
+      
+      # Security test configuration
+      SECURITY_VALIDATION_ENABLED: "true"
+      
+      # LLM Monitoring configuration
+      LLM_MONITORING_ENABLED: "true"
+      LANGFUSE_MONITORING_ENABLED: "true"
+      
+    volumes:
+      # Test result outputs
+      - ./test-results:/app/test-results
+      - ./test-logs:/app/test-logs
+      
+      # Source code (for development testing)
+      - ../../src:/app/src:ro
+      - ../../tests:/app/tests:ro
+      
+      # Configuration
+      - ../../Cargo.toml:/app/Cargo.toml:ro
+      - ../../Cargo.lock:/app/Cargo.lock:ro
+    
+    # Override default command for different test scenarios
+    command: ["./tests/run_integration_tests.sh"]
+    
+    # Resource limits for consistent testing
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 1G
+          cpus: '1.0'
+
+  # Performance benchmarking service
+  performance-tests:
+    build:
+      context: ../../
+      dockerfile: tests/docker/Dockerfile.test
+    depends_on:
+      postgres:
+        condition: service_healthy
+      langfuse-server:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/llm_supabase_test
+      
+      # Langfuse configuration for performance monitoring
+      LANGFUSE_BASE_URL: http://langfuse-server:3000
+      LANGFUSE_PUBLIC_KEY: pk_lf_perf_test_key
+      LANGFUSE_SECRET_KEY: sk_lf_perf_test_key
+      
+      TEST_MODE: performance
+      RUST_LOG: info
+      PERFORMANCE_ONLY: "true"
+      LLM_MONITORING_ENABLED: "true"
+    command: ["cargo", "test", "test_response_time_benchmarks", "test_simple_concurrent_throughput", "test_sustained_load", "--", "--nocapture"]
+    volumes:
+      - ./performance-results:/app/test-results
+    
+    # Higher resource allocation for performance testing
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '4.0'
+
+  # Security testing service
+  security-tests:
+    build:
+      context: ../../
+      dockerfile: tests/docker/Dockerfile.test
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/llm_supabase_test
+      TEST_MODE: security
+      RUST_LOG: warn
+      SECURITY_ONLY: "true"
+    command: [
+      "cargo", "test", 
+      "test_file_operation_security",
+      "test_request_validation_edge_cases",
+      "test_diff_patch_error_handling",
+      "--", "--nocapture"
+    ]
+    volumes:
+      - ./security-results:/app/test-results
+
+  # Load testing service
+  load-tests:
+    build:
+      context: ../../
+      dockerfile: tests/docker/Dockerfile.test
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/llm_supabase_test
+      TEST_MODE: load
+      LOAD_TEST_DURATION: 300  # 5 minutes
+      CONCURRENT_CLIENTS: 10
+    command: ["cargo", "test", "test_sustained_load", "--", "--nocapture"]
+    profiles:
+      - load-testing
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '8.0'
+
+  # Monitoring service for test metrics
+  test-metrics:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/datasources:/etc/grafana/provisioning/datasources
+    profiles:
+      - monitoring
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  default:
+    name: codex-cli-test-network
+
+# Usage examples:
+#
+# Run basic integration tests:
+# docker-compose -f tests/docker/docker-compose.test.yml up integration-tests
+#
+# Run performance benchmarks:
+# docker-compose -f tests/docker/docker-compose.test.yml up performance-tests
+#
+# Run security validation:
+# docker-compose -f tests/docker/docker-compose.test.yml up security-tests
+#
+# Run load testing:
+# docker-compose -f tests/docker/docker-compose.test.yml --profile load-testing up load-tests
+#
+# Run with monitoring:
+# docker-compose -f tests/docker/docker-compose.test.yml --profile monitoring up

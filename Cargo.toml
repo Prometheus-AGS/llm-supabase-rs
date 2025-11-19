@@ -10,6 +10,7 @@ description = "OpenAI-compatible API service with Vertex AI integration"
 axum = { version = "0.8.6", features = ["macros", "multipart"] }
 axum-extra = { version = "0.10.3", features = ["typed-header"] }
 tokio = { version = "1.0", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
 tower = { version = "0.5.2", features = ["full"] }
 tower-http = { version = "0.6.6", features = ["fs", "trace", "cors"] }
 axum-tracing-opentelemetry = "0.32.0"
@@ -62,12 +63,24 @@ futures = "0.3"
 base64 = "0.22.1"
 dotenv = "0.15"
 rand = "0.9.2"
+similar = "2.6"  # For diff generation and text comparison
+regex = "1.10"   # For advanced pattern matching in diffs
+tempfile = "3.8" # For safe temporary file operations
+
+# AWS SDK and cryptography for Bedrock
+sha2 = "0.10"     # For SHA256 hashing in AWS SigV4
+hmac = "0.12"     # For HMAC-SHA256 in AWS SigV4
+hex = "0.4"       # For hex encoding in AWS SigV4
+url = "2.4"       # For URL parsing in AWS SigV4
+
+# LLM Observability and Monitoring
+langfuse = "0.1"
 
 # Configuration
 config = "0.15.18"
 
 # Async streams
-tokio-stream = "0.1"
+tokio-stream = { version = "0.1", features = ["io-util"] }
 futures-util = "0.3"
 bytes = "1.5"
 async-stream = "0.3"
@@ -134,9 +147,43 @@ path = "tests/integration/test_vertex_e2e.rs"
 name = "integration_streaming_validation"
 path = "tests/integration/test_streaming_validation.rs"
 
+# New Codex CLI Integration Tests (Basic Working Version)
+[[test]]
+name = "integration_basic"
+path = "tests/integration/test_basic_integration.rs"
+
+# Advanced Integration Tests (To be activated when codebase compilation issues are resolved)
+[[test]]
+name = "integration_codex_cli_workflow"
+path = "tests/integration/test_codex_cli_workflow.rs"
+
+[[test]]
+name = "integration_multi_turn_conversations"
+path = "tests/integration/test_multi_turn_conversations.rs"
+
+[[test]]
+name = "integration_streaming_tool_calls"
+path = "tests/integration/test_streaming_tool_calls.rs"
+
+[[test]]
+name = "integration_provider_fallback_integration"
+path = "tests/integration/test_provider_fallback_integration.rs"
+
+[[test]]
+name = "integration_diff_patch_workflow"
+path = "tests/integration/test_diff_patch_workflow.rs"
+
+[[test]]
+name = "integration_performance_benchmarks"
+path = "tests/integration/test_performance_benchmarks.rs"
+
 [dev-dependencies]
 tokio-test = "0.4"
 axum-test = "18.1"
 chrono = { version = "0.4", features = ["serde"] }
 reqwest = { version = "0.12.23", features = ["json", "stream"] }
 futures-util = "0.3"
+# Additional test utilities
+mockall = "0.12"
+wiremock = "0.6"
+criterion = "0.5"

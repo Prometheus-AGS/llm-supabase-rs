@@ -108,6 +108,11 @@ pub struct ChatCompletionRequest {
     /// Whether to store the conversation for future reference
     #[serde(skip_serializing_if = "Option::is_none")]
     pub store: Option<bool>,
+
+    /// Previous response ID for multi-turn conversation support
+    /// Used by Codex CLI and other clients for conversation threading
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_response_id: Option<String>,
 }
 
 /// Stream options for streaming chat completions
@@ -155,7 +160,14 @@ impl ChatCompletionRequest {
             metadata: None,
             service_tier: None,
             store: None,
+            previous_response_id: None,
         }
+    }
+
+    /// Set the previous response ID for conversation continuity
+    pub fn with_previous_response_id<S: Into<String>>(mut self, previous_response_id: S) -> Self {
+        self.previous_response_id = Some(previous_response_id.into());
+        self
     }
 
     /// Set max_tokens for the request

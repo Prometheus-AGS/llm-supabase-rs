@@ -1,0 +1,70 @@
+# Dockerfile for Codex CLI Integration Testing Environment
+# Provides a consistent, reproducible testing environment
+
+FROM rust:1.75-slim-bullseye
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    libpq-dev \
+    postgresql-client \
+    curl \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set environment variables
+ENV CARGO_TERM_COLOR=always
+ENV RUST_BACKTRACE=1
+ENV RUSTFLAGS="-D warnings"
+
+# Create app directory
+WORKDIR /app
+
+# Create user for running tests (security best practice)
+RUN useradd -m -u 1000 testuser && \
+    chown -R testuser:testuser /app
+
+# Copy Cargo files first for better caching
+COPY Cargo.toml Cargo.lock ./
+
+# Pre-build dependencies
+RUN cargo fetch && \
+    # Create dummy source structure to cache dependencies
+    mkdir -p src tests && \
+    echo "fn main() {}" > src/main.rs && \
+    echo "// dummy lib" > src/lib.rs && \
+    # Build dependencies
+    cargo build --tests && \
+    # Clean up dummy files
+    rm -rf src target/debug/deps/llm_supabase_rs-*
+
+# Copy source code
+COPY src/ src/
+COPY tests/ tests/
+
+# Build the actual application and tests
+RUN cargo build --tests
+
+# Switch to non-root user
+USER testuser
+
+# Set up test execution environment
+ENV TEST_MODE=docker
+ENV DATABASE_URL=postgresql://postgres:postgres@postgres:5432/llm_supabase_test
+
+# Create volumes for test artifacts
+VOLUME ["/app/test-results", "/app/test-logs"]
+
+# Default command runs the integration test suite
+CMD ["./tests/run_integration_tests.sh"]
+
+# Health check to ensure container is ready
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD cargo test test_basic_request_creation --quiet || exit 1
+
+# Labels for documentation
+LABEL maintainer="Codex CLI Integration Test Team"
+LABEL description="Docker container for running Codex CLI integration tests"
+LABEL version="1.0"

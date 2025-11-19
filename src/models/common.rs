@@ -30,6 +30,25 @@ pub enum MessageRole {
     Function,
 }
 
+impl MessageRole {
+    /// Convert MessageRole to string
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MessageRole::System => "system",
+            MessageRole::User => "user",
+            MessageRole::Assistant => "assistant",
+            MessageRole::Tool => "tool",
+            MessageRole::Function => "function",
+        }
+    }
+}
+
+impl std::fmt::Display for MessageRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// Function definition for function calling
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionDefinition {

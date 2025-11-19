@@ -8,11 +8,16 @@ use axum::{
 };
 use serde_json::{self, Value, json};
 use std::time::SystemTime;
+use std::sync::Arc;
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 use async_stream;
 
 use crate::app::AppState;
+use crate::features::conversations::{
+    ConversationManager,
+    conversation_manager::{ConversationRequest, UpdateConversationParams}
+};
 use crate::infrastructure::{
     vertex::FormatConverter,
     common::{
@@ -22,7 +27,7 @@ use crate::infrastructure::{
 use crate::models::{
     request::ChatCompletionRequest,
     response::ChatCompletionResponse,
-    common::MessageRole,
+    common::{MessageRole, ChatMessage},
 };
 use crate::shared::AppError;
 
@@ -136,8 +141,38 @@ pub async fn chat_completions(
         return Err(AppError::validation("Streaming requests should use the streaming endpoint"));
     }
 
-    // Convert OpenAI format to Vertex AI format
-    let vertex_request = match FormatConverter::openai_to_vertex_v2(&chat_request) {
+    // Process conversation request
+    let conversation_request = ConversationRequest {
+        chat_request: chat_request.clone(),
+        user_id: None, // Could be extracted from headers/auth in the future
+        client_type: Some("unknown".to_string()), // Could be detected from User-Agent
+        client_version: None,
+        metadata: std::collections::HashMap::new(),
+    };
+
+    let conversation_context = match state.conversation_manager.process_request(conversation_request).await {
+        Ok(context) => {
+            info!(
+                request_id = %request_id,
+                conversation_id = %context.conversation_id,
+                is_new = context.is_new_conversation,
+                messages_count = context.messages.len(),
+                "Processed conversation request"
+            );
+            context
+        }
+        Err(e) => {
+            error!(request_id = %request_id, error = %e, "Failed to process conversation");
+            return Err(e);
+        }
+    };
+
+    // Create a modified request with the full conversation context
+    let mut context_request = chat_request.clone();
+    context_request.messages = conversation_context.messages;
+
+    // Convert OpenAI format to Vertex AI format using the context
+    let vertex_request = match FormatConverter::openai_to_vertex_v2(&context_request) {
         Ok(req) => {
             debug!(request_id = %request_id, "Converted OpenAI request to Vertex AI format");
             req
@@ -160,22 +195,18 @@ pub async fn chat_completions(
         }
     };
 
+    // Generate unique response ID for conversation tracking
+    let response_id = ConversationManager::generate_response_id();
+
     // Convert Vertex AI response to OpenAI format
-    let openai_response = match FormatConverter::vertex_to_openai_v2(
+    let mut openai_response = match FormatConverter::vertex_to_openai_v2(
         &vertex_response,
-        &request_id,
+        &response_id,  // Use conversation-aware response ID
         &chat_request.model,
-        &chat_request,
+        &context_request,  // Use context request for proper conversion
     ) {
         Ok(response) => {
-            let duration = start_time.elapsed().unwrap_or_default();
-            info!(
-                request_id = %request_id,
-                model = %response.model,
-                usage_total_tokens = response.usage.total_tokens,
-                duration_ms = duration.as_millis(),
-                "Chat completion successful"
-            );
+            debug!(request_id = %request_id, response_id = %response_id, "Converted Vertex AI response to OpenAI format");
             response
         }
         Err(e) => {
@@ -183,6 +214,38 @@ pub async fn chat_completions(
             return Err(AppError::internal(format!("Response conversion failed: {}", e)));
         }
     };
+
+    // Ensure the response ID is set correctly
+    openai_response.id = response_id.clone();
+
+    // Update conversation with the response
+    if let Some(choice) = openai_response.choices.first() {
+        let update_params = UpdateConversationParams {
+            conversation_id: conversation_context.conversation_id.clone(),
+            response_id: response_id.clone(),
+            response_message: choice.message.clone(),
+            prompt_tokens: openai_response.usage.prompt_tokens,
+            completion_tokens: openai_response.usage.completion_tokens,
+        };
+
+        if let Err(e) = state.conversation_manager.update_after_response(update_params).await {
+            warn!(request_id = %request_id, error = %e, "Failed to update conversation after response");
+            // Don't fail the request, just log the warning
+        } else {
+            debug!(request_id = %request_id, conversation_id = %conversation_context.conversation_id, "Updated conversation with response");
+        }
+    }
+
+    let duration = start_time.elapsed().unwrap_or_default();
+    info!(
+        request_id = %request_id,
+        response_id = %response_id,
+        conversation_id = %conversation_context.conversation_id,
+        model = %openai_response.model,
+        usage_total_tokens = openai_response.usage.total_tokens,
+        duration_ms = duration.as_millis(),
+        "Chat completion successful"
+    );
 
     Ok(Json(openai_response))
 }
@@ -234,15 +297,45 @@ pub async fn chat_completions_streaming(
     validate_chat_request(&chat_request, &request_id)?;
 
     // Initialize tool call manager if tools are provided
-    let mut tool_manager = if chat_request.tools.is_some() {
+    let tool_manager = if chat_request.tools.is_some() {
         debug!(request_id = %request_id, tools_count = chat_request.tools.as_ref().unwrap().len(), "Tools detected, initializing tool call manager");
         Some(ToolCallManager::claude())
     } else {
         None
     };
 
-    // Convert OpenAI format to Vertex AI streaming format
-    let vertex_request = match FormatConverter::openai_to_vertex_streaming(&chat_request) {
+    // Process conversation request for streaming
+    let conversation_request = ConversationRequest {
+        chat_request: chat_request.clone(),
+        user_id: None, // Could be extracted from headers/auth in the future
+        client_type: Some("unknown".to_string()), // Could be detected from User-Agent
+        client_version: None,
+        metadata: std::collections::HashMap::new(),
+    };
+
+    let conversation_context = match state.conversation_manager.process_request(conversation_request).await {
+        Ok(context) => {
+            info!(
+                request_id = %request_id,
+                conversation_id = %context.conversation_id,
+                is_new = context.is_new_conversation,
+                messages_count = context.messages.len(),
+                "Processed streaming conversation request"
+            );
+            context
+        }
+        Err(e) => {
+            error!(request_id = %request_id, error = %e, "Failed to process streaming conversation");
+            return Err(e);
+        }
+    };
+
+    // Create a modified request with the full conversation context
+    let mut context_request = chat_request.clone();
+    context_request.messages = conversation_context.messages;
+
+    // Convert OpenAI format to Vertex AI streaming format using the context
+    let vertex_request = match FormatConverter::openai_to_vertex_streaming(&context_request) {
         Ok(req) => {
             debug!(request_id = %request_id, "Converted OpenAI request to Vertex AI streaming format");
             req
@@ -266,12 +359,23 @@ pub async fn chat_completions_streaming(
         }
     };
 
-    // Create Server-Sent Events stream
+    // Generate unique response ID for streaming conversation tracking
+    let response_id = ConversationManager::generate_response_id();
+    
+    // Clone conversation manager for use in the stream
+    let conversation_manager = state.conversation_manager.clone();
+    let conversation_id = conversation_context.conversation_id.clone();
+
+    // Create Server-Sent Events stream with OpenAI compliance
     let stream = async_stream::stream! {
         use tokio_stream::StreamExt;
         
-        info!(request_id = %request_id, "🌊 Starting to process Vertex AI stream chunks...");
+        info!(request_id = %request_id, response_id = %response_id, "🌊 Starting OpenAI-compliant streaming...");
         let mut chunk_count = 0;
+        let mut tool_calls_detected = false;
+        let mut accumulated_tool_calls: Vec<crate::infrastructure::common::UnifiedToolCall> = Vec::new();
+        let mut accumulated_content = String::new();
+        let mut final_usage: Option<crate::models::common::Usage> = None;
         
         while let Some(chunk_result) = vertex_stream.next().await {
             chunk_count += 1;
@@ -294,26 +398,35 @@ pub async fn chat_completions_streaming(
                         Ok(Some(openai_chunk)) => {
                             debug!(request_id = %request_id, "Successfully converted chunk to OpenAI format");
                             
-                            // Check for tool calls in the chunk
-                            if let Some(ref mut tool_mgr) = tool_manager {
-                                if let Some(choice) = openai_chunk.choices.first() {
-                                    // Check if this chunk contains tool calls
-                                    if let Some(tool_calls) = &choice.delta.tool_calls {
-                                        debug!(request_id = %request_id, tool_calls_count = tool_calls.len(), "Tool calls detected in streaming chunk");
-                                        
-                                        // Convert tool calls to unified format
-                                        let tool_calls_json = serde_json::to_value(tool_calls).unwrap_or_default();
-                                        if let Ok(Some(_unified_calls)) = tool_mgr.process_tool_calls(&tool_calls_json, request_id.clone()) {
-                                            debug!(request_id = %request_id, "Tool calls processed, waiting for client response");
-                                            // The tool calls will be sent to the client in the normal chunk
-                                            // The client should respond with tool results
+                            // Check for tool calls and implement OpenAI compliance
+                            let mut should_terminate_stream = false;
+                            
+                            if let Some(choice) = openai_chunk.choices.first() {
+                                // Check if this chunk contains tool calls
+                                if let Some(tool_calls) = &choice.delta.tool_calls {
+                                    debug!(request_id = %request_id, tool_calls_count = tool_calls.len(), "Tool calls detected in streaming chunk");
+                                    tool_calls_detected = true;
+                                    
+                                    // Convert and accumulate tool calls
+                                    for tool_call_json in tool_calls {
+                                        if let Ok(tool_call) = serde_json::from_value::<crate::shared::types::ToolCall>(tool_call_json.clone()) {
+                                            let arguments = serde_json::from_str(&tool_call.function.arguments)
+                                                .unwrap_or_else(|_| serde_json::Value::String(tool_call.function.arguments.clone()));
+                                            
+                                            accumulated_tool_calls.push(crate::infrastructure::common::UnifiedToolCall {
+                                                id: tool_call.id,
+                                                function_name: tool_call.function.name,
+                                                arguments,
+                                                metadata: std::collections::HashMap::new(),
+                                            });
                                         }
                                     }
-                                    
-                                    // Check if this indicates tool calls are complete
-                                    if choice.finish_reason.as_ref().map(|r| r.to_string()) == Some("tool_calls".to_string()) {
-                                        debug!(request_id = %request_id, "Tool calls completed, stream will pause for tool results");
-                                    }
+                                }
+                                
+                                // Check if this indicates tool calls are complete (OpenAI compliance requirement)
+                                if choice.finish_reason.as_ref().map(|r| r.to_string()) == Some("tool_calls".to_string()) {
+                                    debug!(request_id = %request_id, "Tool calls completed - stream termination required per OpenAI spec");
+                                    should_terminate_stream = true;
                                 }
                             }
                             
@@ -327,8 +440,26 @@ pub async fn chat_completions_streaming(
                             };
                             
                             let sse_data = format!("data: {}\n\n", chunk_json);
-                            debug!(request_id = %request_id, "Sending SSE chunk: {}", sse_data.trim());
+                            debug!(request_id = %request_id, "Sending OpenAI-compliant SSE chunk");
                             yield Ok::<_, axum::Error>(sse_data);
+                            
+                            // Implement OpenAI compliance: terminate stream after tool calls
+                            if should_terminate_stream {
+                                info!(request_id = %request_id, "🛑 Terminating stream after tool calls (OpenAI spec compliance)");
+                                
+                                // Send [DONE] message and terminate stream
+                                yield Ok::<_, axum::Error>("data: [DONE]\n\n".to_string());
+                                
+                                let duration = start_time.elapsed().unwrap_or_default();
+                                info!(
+                                    request_id = %request_id,
+                                    duration_ms = duration.as_millis(),
+                                    chunks_processed = chunk_count,
+                                    tool_calls_count = accumulated_tool_calls.len(),
+                                    "Stream terminated after tool calls - client should send continuation request with tool results"
+                                );
+                                return; // Critical: terminate stream here
+                            }
                         }
                         Ok(None) => {
                             debug!(request_id = %request_id, "Converter returned None, skipping chunk");
@@ -351,13 +482,14 @@ pub async fn chat_completions_streaming(
             }
         }
         
+        // Natural stream completion (no tool calls interruption)
         if chunk_count == 0 {
             warn!(request_id = %request_id, "⚠️  No chunks received from Vertex AI - this explains the issue!");
         } else {
-            info!(request_id = %request_id, total_chunks = chunk_count, "✅ Processed all chunks from Vertex AI");
+            info!(request_id = %request_id, total_chunks = chunk_count, "✅ Processed all chunks from Vertex AI naturally");
         }
         
-        // Send final [DONE] message
+        // Send final [DONE] message for natural completion
         yield Ok::<_, axum::Error>("data: [DONE]\n\n".to_string());
         
         let duration = start_time.elapsed().unwrap_or_default();
@@ -365,6 +497,7 @@ pub async fn chat_completions_streaming(
             request_id = %request_id,
             duration_ms = duration.as_millis(),
             total_chunks_processed = chunk_count,
+            had_tool_calls = tool_calls_detected,
             "Completed streaming chat completion"
         );
     };
@@ -513,6 +646,7 @@ mod tests {
             stream_options: None,
             service_tier: None,
             store: None,
+            previous_response_id: None,
         }
     }
 

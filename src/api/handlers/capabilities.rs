@@ -240,14 +240,7 @@ pub async fn detect_client_capabilities(
             "none".to_string()
         },
         recommended_parallel_tool_calls: capabilities.supports_parallel_execution,
-        recommended_streaming_approach: match capabilities.streaming_behavior {
-            crate::infrastructure::common::StreamingBehavior::LegacyStop => 
-                "legacy_stop_resume".to_string(),
-            crate::infrastructure::common::StreamingBehavior::ModernBatch => 
-                "modern_batch_continuation".to_string(),
-            crate::infrastructure::common::StreamingBehavior::Adaptive => 
-                "adaptive_based_on_content".to_string(),
-        },
+        recommended_streaming_approach: format!("{:?}", capabilities.streaming_behavior),
         performance_tips: vec![
             "Use parallel_tool_calls: true for better performance".to_string(),
             "Consider tool_calls array format for multiple tools".to_string(),

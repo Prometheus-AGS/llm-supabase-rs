@@ -52,6 +52,7 @@ mod tests {
             service_tier: None,
             store: None,
             stream_options: None,
+            previous_response_id: None,
         };
 
         // 2. Convert to Vertex AI format
@@ -180,6 +181,7 @@ mod tests {
             service_tier: None,
             store: None,
             stream_options: None,
+            previous_response_id: None,
         };
 
         // Convert to streaming request
@@ -263,6 +265,7 @@ mod tests {
             service_tier: None,
             store: None,
             stream_options: None,
+            previous_response_id: None,
         };
         
         // Test non-streaming conversion
@@ -446,6 +449,7 @@ mod tests {
             service_tier: None,
             store: None,
             stream_options: None,
+            previous_response_id: None,
         };
 
         let result = FormatConverter::openai_to_vertex_v2(&empty_request);
