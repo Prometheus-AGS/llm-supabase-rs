@@ -113,7 +113,7 @@ impl GroqConverter {
     /// Get the finish reason from the response
     pub fn get_finish_reason(&self, response: &ChatCompletionResponse) -> Option<String> {
         response.choices.first()
-            .and_then(|choice| choice.finish_reason.clone())
+            .map(|choice| format!("{:?}", choice.finish_reason))
     }
 
     /// Check if the response indicates tool calls are needed
@@ -194,7 +194,7 @@ impl GroqConverter {
                 model,
                 GroqModel::get_tool_capable_models()
                     .iter()
-                    .map(|m| &m.name)
+                    .map(|m| m.name.as_str())
                     .collect::<Vec<_>>()
                     .join(", ")
             ));

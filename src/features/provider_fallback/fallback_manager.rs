@@ -422,6 +422,7 @@ impl FallbackManager {
 
         // Score each candidate using intelligent multi-factor analysis
         let mut scored_candidates = Vec::new();
+        let candidates_clone = candidates.clone();
         
         for provider in candidates {
             let total_score = self.calculate_intelligent_provider_score(
@@ -439,7 +440,7 @@ impl FallbackManager {
 
         if scored_candidates.is_empty() {
             return Err(FallbackManagerError::NoSuitableProvider {
-                candidates: candidates,
+                candidates: candidates_clone,
                 requirements: requirements.clone(),
             });
         }

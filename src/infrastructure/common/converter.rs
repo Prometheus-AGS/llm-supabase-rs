@@ -6,6 +6,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use tokio_stream::Stream;
+use reqwest;
+use std::pin::Pin;
 
 use crate::models::{
     request::ChatCompletionRequest,
@@ -76,6 +78,11 @@ pub trait ProviderConverter: Send + Sync {
         // Default implementation - providers can override
         model.to_string()
     }
+
+    /// Parse provider error response
+    fn parse_error(&self, status: u16, body: &str) -> anyhow::Error {
+        anyhow::anyhow!("Provider request failed with status {}: {}", status, body)
+    }
 }
 
 /// Streaming converter trait for providers that support streaming
@@ -84,13 +91,19 @@ pub trait StreamingConverter: ProviderConverter {
     /// Stream type returned by the provider
     type ProviderStream: Stream<Item = Result<Self::ProviderStreamChunk, Self::ProviderError>> + Send;
 
+    /// Convert response to stream
+    async fn response_to_stream(
+        &self,
+        response: reqwest::Response,
+    ) -> Result<Self::ProviderStream>;
+
     /// Process a stream of provider chunks into OpenAI chunks
     async fn process_stream(
         &self,
         stream: Self::ProviderStream,
         request_id: String,
         model: String,
-    ) -> impl Stream<Item = Result<ChatCompletionChunk, anyhow::Error>> + Send;
+    ) -> Pin<Box<dyn Stream<Item = Result<ChatCompletionChunk, anyhow::Error>> + Send>>;
 }
 
 /// Error handling trait for provider-specific errors

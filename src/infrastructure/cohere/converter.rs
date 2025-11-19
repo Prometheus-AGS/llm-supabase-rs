@@ -213,7 +213,7 @@ impl ToolCallConverter for CohereConverter {
         let cohere_calls: Vec<CohereToolCall> = serde_json::from_value(provider_data.clone())
             .map_err(|e| anyhow::anyhow!("Failed to parse Cohere tool calls: {}", e))?;
         
-        let unified_calls = cohere_calls.into_iter().enumerate().map(|(index, call)| {
+        let unified_calls: Vec<UnifiedToolCall> = cohere_calls.into_iter().enumerate().map(|(index, call)| {
             let id = call.id.unwrap_or_else(|| format!("cohere_call_{}", index));
             
             UnifiedToolCall {

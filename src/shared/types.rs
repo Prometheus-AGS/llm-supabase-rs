@@ -17,336 +17,319 @@ pub enum TokenType {
     ServiceRole,
 }
 
-// OpenAI API compatible types
+/// Supported AI providers
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AIProvider {
+    #[serde(rename = "vertex_ai")]
+    VertexAI,
+    #[serde(rename = "bedrock")]
+    Bedrock,
+    #[serde(rename = "openai")]
+    OpenAI,
+    #[serde(rename = "anthropic")]
+    Anthropic,
+    #[serde(rename = "azure")]
+    Azure,
+}
+
+impl AIProvider {
+    /// Get the provider name as a string
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AIProvider::VertexAI => "vertex_ai",
+            AIProvider::Bedrock => "bedrock",
+            AIProvider::OpenAI => "openai",
+            AIProvider::Anthropic => "anthropic",
+            AIProvider::Azure => "azure",
+        }
+    }
+
+    /// Parse provider from string
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "vertex_ai" | "vertex" | "gcp" => Some(AIProvider::VertexAI),
+            "bedrock" | "aws" => Some(AIProvider::Bedrock),
+            "openai" => Some(AIProvider::OpenAI),
+            "anthropic" => Some(AIProvider::Anthropic),
+            "azure" => Some(AIProvider::Azure),
+            _ => None,
+        }
+    }
+
+    /// Get supported models for this provider
+    pub fn supported_models(&self) -> Vec<&'static str> {
+        match self {
+            AIProvider::VertexAI => vec![
+                "claude-sonnet-4-5@20250929",
+                "claude-3-5-haiku@20241022",
+                "claude-3-5-sonnet@20241022",
+            ],
+            AIProvider::Bedrock => vec![
+                "anthropic.claude-3-5-sonnet-20241022-v2:0",
+                "anthropic.claude-3-5-haiku-20241022-v1:0",
+                "anthropic.claude-3-opus-20240229-v1:0",
+            ],
+            AIProvider::OpenAI => vec![
+                "gpt-4o",
+                "gpt-4o-mini",
+                "gpt-4-turbo",
+                "gpt-3.5-turbo",
+            ],
+            AIProvider::Anthropic => vec![
+                "claude-3-5-sonnet-20241022",
+                "claude-3-5-haiku-20241022",
+                "claude-3-opus-20240229",
+            ],
+            AIProvider::Azure => vec![
+                "gpt-4o",
+                "gpt-4-turbo",
+                "gpt-35-turbo",
+            ],
+        }
+    }
+}
+
+/// Provider capabilities
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatCompletionRequest {
-    pub model: String,
-    pub messages: Vec<ChatMessage>,
-    #[serde(default)]
+pub struct ProviderCapabilities {
+    /// Whether the provider supports streaming
+    pub streaming: bool,
+    
+    /// Whether the provider supports function calling
+    pub function_calling: bool,
+    
+    /// Whether the provider supports vision/image inputs
+    pub vision: bool,
+    
+    /// Maximum tokens supported
     pub max_tokens: Option<u32>,
-    #[serde(default)]
-    pub temperature: Option<f32>,
-    #[serde(default)]
-    pub top_p: Option<f32>,
-    #[serde(default)]
-    pub stream: bool,
-    #[serde(default)]
-    pub tools: Vec<Tool>,
-    #[serde(default)]
-    pub tool_choice: Option<ToolChoice>,
-    #[serde(default)]
-    pub user: Option<String>,
+    
+    /// Maximum context length
+    pub max_context_length: Option<u32>,
+    
+    /// Supported input types
+    pub input_types: Vec<InputType>,
+    
+    /// Supported output formats
+    pub output_formats: Vec<OutputFormat>,
 }
 
+/// Input types supported by providers
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InputType {
+    Text,
+    Image,
+    Audio,
+    Video,
+    Document,
+}
+
+/// Output formats supported by providers
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OutputFormat {
+    Text,
+    Json,
+    Structured,
+    FunctionCall,
+}
+
+/// Provider configuration trait
+pub trait ProviderConfig {
+    /// Get the provider type
+    fn provider(&self) -> AIProvider;
+    
+    /// Get provider capabilities
+    fn capabilities(&self) -> ProviderCapabilities;
+    
+    /// Validate the configuration
+    fn validate(&self) -> anyhow::Result<()>;
+    
+    /// Get the base URL for API calls
+    fn base_url(&self) -> String;
+    
+    /// Get authentication headers
+    fn auth_headers(&self) -> std::collections::HashMap<String, String>;
+}
+
+/// Model mapping for cross-provider compatibility
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatMessage {
-    pub role: String,
-    pub content: MessageContent,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<ToolCall>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
+pub struct ModelMapping {
+    /// OpenAI-compatible model name
+    pub openai_name: String,
+    
+    /// Provider-specific model name
+    pub provider_name: String,
+    
+    /// Provider this mapping applies to
+    pub provider: AIProvider,
+    
+    /// Model capabilities
+    pub capabilities: ProviderCapabilities,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum MessageContent {
-    Text(String),
-    Parts(Vec<MessagePart>),
+impl ModelMapping {
+    /// Create a new model mapping
+    pub fn new(
+        openai_name: impl Into<String>,
+        provider_name: impl Into<String>,
+        provider: AIProvider,
+        capabilities: ProviderCapabilities,
+    ) -> Self {
+        Self {
+            openai_name: openai_name.into(),
+            provider_name: provider_name.into(),
+            provider,
+            capabilities,
+        }
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MessagePart {
-    #[serde(rename = "type")]
-    pub part_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub image_url: Option<ImageUrl>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImageUrl {
-    pub url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Tool {
-    #[serde(rename = "type")]
-    pub tool_type: String,
-    pub function: Function,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Function {
-    pub name: String,
-    pub description: Option<String>,
-    pub parameters: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ToolChoice {
-    String(String), // "auto", "none"
-    Function {
-        #[serde(rename = "type")]
-        tool_type: String,
-        function: FunctionChoice,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FunctionChoice {
-    pub name: String,
-}
-
+/// Tool call structure matching OpenAI API format
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
+    /// Unique identifier for the tool call
     pub id: String,
+    
+    /// Tool type, typically "function"
     #[serde(rename = "type")]
     pub tool_type: String,
+    
+    /// Function call details
     pub function: FunctionCall,
 }
 
+/// Function call structure matching OpenAI API format
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionCall {
+    /// Name of the function to call
     pub name: String,
+    
+    /// Arguments to pass to the function (as JSON string)
     pub arguments: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatCompletionResponse {
-    pub id: String,
-    pub object: String,
-    pub created: i64,
-    pub model: String,
-    pub choices: Vec<Choice>,
-    pub usage: Usage,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Choice {
-    pub index: u32,
-    pub message: ChatMessage,
-    pub finish_reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatCompletionChunk {
-    pub id: String,
-    pub object: String,
-    pub created: i64,
-    pub model: String,
-    pub choices: Vec<ChoiceDelta>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChoiceDelta {
-    pub index: u32,
-    pub delta: ChatMessageDelta,
-    pub finish_reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatMessageDelta {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<ToolCallDelta>>,
-}
-
+/// Tool call delta for streaming (incremental updates)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallDelta {
+    /// Tool call index in the array
     pub index: u32,
+    
+    /// Tool call ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "type")]
+    
+    /// Tool type, typically "function"
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub tool_type: Option<String>,
+    
+    /// Function call delta
     #[serde(skip_serializing_if = "Option::is_none")]
     pub function: Option<FunctionCallDelta>,
 }
 
+/// Function call delta for streaming
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionCallDelta {
+    /// Function name (may be partial in streaming)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    
+    /// Function arguments (may be partial in streaming)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Usage {
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
-    pub total_tokens: u32,
-}
-
-// Embedding types
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmbeddingRequest {
-    pub model: String,
-    pub input: EmbeddingInput,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub encoding_format: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dimensions: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub user: Option<String>,
-}
-
+/// Message content structure supporting text and multimodal content
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum EmbeddingInput {
-    Single(String),
-    Multiple(Vec<String>),
+pub enum MessageContent {
+    /// Simple text content
+    Text(String),
+    
+    /// Multimodal content with multiple parts
+    Parts(Vec<MessagePart>),
 }
 
+/// Message part for multimodal content
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmbeddingResponse {
-    pub object: String,
-    pub data: Vec<EmbeddingData>,
-    pub model: String,
-    pub usage: EmbeddingUsage,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmbeddingData {
-    pub object: String,
-    pub embedding: Vec<f32>,
-    pub index: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmbeddingUsage {
-    pub prompt_tokens: u32,
-    pub total_tokens: u32,
-}
-
-// Model types
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelListResponse {
-    pub object: String,
-    pub data: Vec<Model>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Model {
-    pub id: String,
-    pub object: String,
-    pub created: i64,
-    pub owned_by: String,
-}
-
-// Logging types
-#[derive(Debug, Clone, Serialize)]
-pub struct RequestLog {
-    pub id: Uuid,
-    pub timestamp: DateTime<Utc>,
-    pub user_id: Option<Uuid>,
-    pub token_type: String,
-    pub endpoint: String,
-    pub model: String,
-    pub prompt_tokens: Option<u32>,
-    pub completion_tokens: Option<u32>,
-    pub total_tokens: Option<u32>,
-    pub request_body: serde_json::Value,
-    pub response_body: Option<serde_json::Value>,
-    pub has_images: bool,
-    pub has_tools: bool,
-    pub tool_calls: Vec<String>,
-    pub duration_ms: u64,
-    pub success: bool,
-    pub error_message: Option<String>,
-}
-
-// Vertex AI types (internal)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VertexRequest {
-    pub contents: Vec<VertexContent>,
+pub struct MessagePart {
+    /// Text content (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub generation_config: Option<VertexGenerationConfig>,
+    pub text: Option<String>,
+    
+    /// Image URL (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub safety_settings: Option<Vec<VertexSafetySetting>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<VertexTool>>,
+    pub image_url: Option<ImageUrl>,
 }
 
+/// Image URL structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VertexContent {
-    pub role: String,
-    pub parts: Vec<VertexPart>,
+pub struct ImageUrl {
+    /// URL of the image
+    pub url: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum VertexPart {
-    Text { text: String },
-    InlineData { inline_data: VertexInlineData },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VertexInlineData {
-    pub mime_type: String,
-    pub data: String, // base64 encoded
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VertexGenerationConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_output_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub top_p: Option<f32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VertexSafetySetting {
-    pub category: String,
-    pub threshold: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VertexTool {
-    pub function_declarations: Vec<VertexFunctionDeclaration>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VertexFunctionDeclaration {
-    pub name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VertexResponse {
-    pub candidates: Vec<VertexCandidate>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub usage_metadata: Option<VertexUsageMetadata>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VertexCandidate {
-    pub content: VertexContent,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub finish_reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub safety_ratings: Option<Vec<VertexSafetyRating>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VertexSafetyRating {
-    pub category: String,
-    pub probability: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VertexUsageMetadata {
-    pub prompt_token_count: u32,
-    pub candidates_token_count: u32,
-    pub total_token_count: u32,
+/// Default model mappings for common providers
+pub fn default_model_mappings() -> Vec<ModelMapping> {
+    vec![
+        // Vertex AI mappings
+        ModelMapping::new(
+            "claude-4-sonnet-20250514",
+            "claude-sonnet-4-5@20250929",
+            AIProvider::VertexAI,
+            ProviderCapabilities {
+                streaming: true,
+                function_calling: true,
+                vision: true,
+                max_tokens: Some(200_000),
+                max_context_length: Some(200_000),
+                input_types: vec![InputType::Text, InputType::Image],
+                output_formats: vec![OutputFormat::Text, OutputFormat::Json, OutputFormat::FunctionCall],
+            },
+        ),
+        ModelMapping::new(
+            "claude-3-5-haiku",
+            "claude-3-5-haiku@20241022",
+            AIProvider::VertexAI,
+            ProviderCapabilities {
+                streaming: true,
+                function_calling: true,
+                vision: true,
+                max_tokens: Some(200_000),
+                max_context_length: Some(200_000),
+                input_types: vec![InputType::Text, InputType::Image],
+                output_formats: vec![OutputFormat::Text, OutputFormat::Json, OutputFormat::FunctionCall],
+            },
+        ),
+        // Bedrock mappings
+        ModelMapping::new(
+            "claude-4-sonnet-20250514",
+            "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            AIProvider::Bedrock,
+            ProviderCapabilities {
+                streaming: true,
+                function_calling: true,
+                vision: true,
+                max_tokens: Some(200_000),
+                max_context_length: Some(200_000),
+                input_types: vec![InputType::Text, InputType::Image],
+                output_formats: vec![OutputFormat::Text, OutputFormat::Json, OutputFormat::FunctionCall],
+            },
+        ),
+        // OpenAI mappings (pass-through)
+        ModelMapping::new(
+            "gpt-4o",
+            "gpt-4o",
+            AIProvider::OpenAI,
+            ProviderCapabilities {
+                streaming: true,
+                function_calling: true,
+                vision: true,
+                max_tokens: Some(128_000),
+                max_context_length: Some(128_000),
+                input_types: vec![InputType::Text, InputType::Image, InputType::Audio],
+                output_formats: vec![OutputFormat::Text, OutputFormat::Json, OutputFormat::FunctionCall],
+            },
+        ),
+    ]
 }

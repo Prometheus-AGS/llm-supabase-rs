@@ -2,11 +2,11 @@
 //
 // Intelligent retry logic with exponential backoff and jitter
 
-use std::time::Duration;
 use rand::Rng;
+use std::time::Duration;
 use tracing::{debug, warn};
 
-use super::models::{RetryConfig, ProviderErrorType, Provider, FallbackAction};
+use super::models::{FallbackAction, Provider, ProviderErrorType, RetryConfig};
 
 /// Retry strategy implementation with configurable backoff algorithms
 #[derive(Debug, Clone)]
@@ -62,13 +62,13 @@ impl RetryStrategy {
             }
             // Network errors and timeouts use exponential backoff
             ProviderErrorType::NetworkError | ProviderErrorType::Timeout => {
-                let exponential_delay = self.config.base_delay.as_millis() as f64 
+                let exponential_delay = self.config.base_delay.as_millis() as f64
                     * self.config.exponential_base.powi(attempt as i32);
                 Duration::from_millis(exponential_delay as u64)
             }
             // Internal errors use standard exponential backoff
             _ => {
-                let exponential_delay = self.config.base_delay.as_millis() as f64 
+                let exponential_delay = self.config.base_delay.as_millis() as f64
                     * self.config.exponential_base.powi((attempt - 1) as i32);
                 Duration::from_millis(exponential_delay as u64)
             }
@@ -255,7 +255,7 @@ impl AdaptiveRetryStrategy {
     /// Create a new adaptive retry strategy
     pub fn new(base_strategy: RetryStrategy) -> Self {
         let mut provider_patterns = std::collections::HashMap::new();
-        
+
         // Initialize with default patterns for known providers
         for provider in Provider::all() {
             provider_patterns.insert(provider, Self::default_pattern_for_provider(provider));
@@ -276,11 +276,47 @@ impl AdaptiveRetryStrategy {
                 success_rate_by_attempt: vec![0.3, 0.7, 0.9],
                 preferred_delay_multiplier: 1.0,
             },
+            Provider::OpenAI => ProviderRetryPattern {
+                provider,
+                typical_recovery_time: Duration::from_secs(20),
+                success_rate_by_attempt: vec![0.4, 0.75, 0.92],
+                preferred_delay_multiplier: 0.9,
+            },
+            Provider::AzureOpenAI => ProviderRetryPattern {
+                provider,
+                typical_recovery_time: Duration::from_secs(25),
+                success_rate_by_attempt: vec![0.4, 0.75, 0.92],
+                preferred_delay_multiplier: 1.0,
+            },
+            Provider::Anthropic => ProviderRetryPattern {
+                provider,
+                typical_recovery_time: Duration::from_secs(20),
+                success_rate_by_attempt: vec![0.45, 0.8, 0.93],
+                preferred_delay_multiplier: 0.9,
+            },
             Provider::Groq => ProviderRetryPattern {
                 provider,
                 typical_recovery_time: Duration::from_secs(15),
                 success_rate_by_attempt: vec![0.5, 0.8, 0.95],
                 preferred_delay_multiplier: 0.8, // Groq typically recovers faster
+            },
+            Provider::Mistral => ProviderRetryPattern {
+                provider,
+                typical_recovery_time: Duration::from_secs(20),
+                success_rate_by_attempt: vec![0.4, 0.75, 0.9],
+                preferred_delay_multiplier: 0.9,
+            },
+            Provider::AwsBedrock => ProviderRetryPattern {
+                provider,
+                typical_recovery_time: Duration::from_secs(30),
+                success_rate_by_attempt: vec![0.35, 0.7, 0.88],
+                preferred_delay_multiplier: 1.1,
+            },
+            Provider::Cohere => ProviderRetryPattern {
+                provider,
+                typical_recovery_time: Duration::from_secs(20),
+                success_rate_by_attempt: vec![0.4, 0.75, 0.9],
+                preferred_delay_multiplier: 0.9,
             },
         }
     }
@@ -315,7 +351,9 @@ impl AdaptiveRetryStrategy {
                 if *success_rate < 0.1 {
                     debug!(
                         "Success rate for attempt {} with {} is too low ({:.2}), stopping retries",
-                        attempt, provider.display_name(), success_rate
+                        attempt,
+                        provider.display_name(),
+                        success_rate
                     );
                     return false;
                 }
@@ -335,7 +373,8 @@ impl AdaptiveRetryStrategy {
         let base_delay = self.base_strategy.calculate_delay(attempt, error);
 
         if let Some(pattern) = self.provider_patterns.get(&provider) {
-            let adjusted_delay_ms = (base_delay.as_millis() as f64 * pattern.preferred_delay_multiplier) as u64;
+            let adjusted_delay_ms =
+                (base_delay.as_millis() as f64 * pattern.preferred_delay_multiplier) as u64;
             Duration::from_millis(adjusted_delay_ms)
         } else {
             base_delay
@@ -358,7 +397,7 @@ impl AdaptiveRetryStrategy {
                 let alpha = 0.1;
                 let current_rate = pattern.success_rate_by_attempt[attempt_index];
                 let new_rate = if success { 1.0 } else { 0.0 };
-                pattern.success_rate_by_attempt[attempt_index] = 
+                pattern.success_rate_by_attempt[attempt_index] =
                     alpha * new_rate + (1.0 - alpha) * current_rate;
             }
 
@@ -417,17 +456,17 @@ mod tests {
         // Test exponential backoff
         let delay1 = strategy.calculate_delay(1, &ProviderErrorType::Timeout);
         let delay2 = strategy.calculate_delay(2, &ProviderErrorType::Timeout);
-        
+
         // Second attempt should have longer delay (exponential backoff)
         assert!(delay2 >= delay1);
 
         // Rate limit should use linear backoff
         let rate_limit_error = ProviderErrorType::RateLimit {
-            reset_time: SystemTime::now() + Duration::from_secs(60)
+            reset_time: SystemTime::now() + Duration::from_secs(60),
         };
         let rate_delay1 = strategy.calculate_delay(1, &rate_limit_error);
         let rate_delay2 = strategy.calculate_delay(2, &rate_limit_error);
-        
+
         // Should be roughly linear (2x for attempt 2)
         assert_eq!(rate_delay2.as_millis(), rate_delay1.as_millis() * 2);
     }
@@ -485,13 +524,13 @@ mod tests {
         let strategy = RetryStrategy::default();
 
         // Should create retry action for retryable error
-        let action = strategy.create_retry_action(
-            Provider::VertexAI,
-            &ProviderErrorType::Timeout,
-            1,
-        );
-        
-        if let FallbackAction::Retry { provider, attempt, .. } = action {
+        let action =
+            strategy.create_retry_action(Provider::VertexAI, &ProviderErrorType::Timeout, 1);
+
+        if let FallbackAction::Retry {
+            provider, attempt, ..
+        } = action
+        {
             assert_eq!(provider, Provider::VertexAI);
             assert_eq!(attempt, 2);
         } else {
@@ -499,12 +538,9 @@ mod tests {
         }
 
         // Should create fail action for non-retryable error
-        let action = strategy.create_retry_action(
-            Provider::VertexAI,
-            &ProviderErrorType::Authentication,
-            1,
-        );
-        
+        let action =
+            strategy.create_retry_action(Provider::VertexAI, &ProviderErrorType::Authentication, 1);
+
         assert!(matches!(action, FallbackAction::Fail { .. }));
     }
 

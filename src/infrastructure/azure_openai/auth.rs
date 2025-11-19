@@ -165,7 +165,9 @@ impl AzureOpenAIAuth {
     
     /// Ensure we have a valid Azure AD token (refresh if necessary)
     async fn ensure_valid_azure_ad_token(&mut self) -> Result<()> {
-        if let Some(ref config) = self.azure_ad_config {
+        // Clone config to avoid borrowing issues
+        let config = self.azure_ad_config.clone();
+        if let Some(config) = config {
             // Check if we need to refresh the token
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -179,7 +181,7 @@ impl AzureOpenAIAuth {
             
             if needs_refresh {
                 debug!("Refreshing Azure AD token");
-                self.refresh_azure_ad_token(config).await?;
+                self.refresh_azure_ad_token(&config).await?;
             }
         }
         
@@ -191,9 +193,9 @@ impl AzureOpenAIAuth {
         let client = reqwest::Client::new();
         let token_url = config.get_token_url();
         
-        let scope = config.scope
-            .as_ref()
-            .unwrap_or(&"https://cognitiveservices.azure.com/.default".to_string());
+        // Use a let binding to ensure the scope string lives long enough
+        let default_scope = "https://cognitiveservices.azure.com/.default".to_string();
+        let scope = config.scope.as_ref().unwrap_or(&default_scope);
         
         let form_data = [
             ("grant_type", "client_credentials"),

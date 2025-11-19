@@ -484,9 +484,14 @@ impl ProviderHealthMonitor {
     pub async fn health_check(&self, provider: Provider) -> Result<Duration, ProviderErrorType> {
         let start = Instant::now();
         
-        match self.perform_provider_health_check(provider).await {
-            Ok(_) => {
-                let response_time = start.elapsed();
+        // Get provider config
+        let config = self.provider_specific_configs.get(&provider)
+            .cloned()
+            .unwrap_or_else(|| ProviderHealthConfig::for_provider(provider));
+        
+        // Perform health check
+        match Self::ping_provider_endpoint(provider, &config).await {
+            Ok(response_time) => {
                 self.record_success(provider, response_time).await;
                 Ok(response_time)
             }
@@ -686,6 +691,134 @@ impl ProviderHealthMonitor {
 
         total_score / health_data.len() as f64
     }
+
+    /// Get comprehensive health metrics
+    pub async fn get_metrics(&self) -> HealthMetrics {
+        let health_data = self.get_all_health().await;
+        let available_providers = self.get_available_providers().await;
+        
+        let mut provider_metrics = HashMap::new();
+        let mut circuit_breaker_states = HashMap::new();
+        let mut average_response_times = HashMap::new();
+        
+        let mut total_requests = 0u64;
+        let mut total_failures = 0u64;
+        let mut total_successes = 0u64;
+        
+        for (provider, health) in &health_data {
+            provider_metrics.insert(*provider, ProviderMetrics {
+                requests: health.total_requests,
+                successes: health.successful_requests,
+                failures: health.failed_requests,
+                success_rate: health.success_rate,
+                consecutive_failures: health.consecutive_failures,
+            });
+            
+            circuit_breaker_states.insert(*provider, health.circuit_breaker_state);
+            average_response_times.insert(*provider, health.average_response_time);
+            
+            total_requests += health.total_requests;
+            total_failures += health.failed_requests;
+            total_successes += health.successful_requests;
+        }
+        
+        let overall_success_rate = if total_requests > 0 {
+            total_successes as f64 / total_requests as f64
+        } else {
+            0.0
+        };
+        
+        HealthMetrics {
+            overall_success_rate,
+            total_requests,
+            total_failures,
+            available_providers: available_providers.len(),
+            total_providers: Provider::all().len(),
+            provider_health: health_data,
+            provider_metrics,
+            circuit_breaker_states,
+            average_response_times,
+        }
+    }
+
+    /// Ping a provider endpoint for health checking
+    async fn ping_provider_endpoint(
+        provider: Provider,
+        config: &ProviderHealthConfig,
+    ) -> Result<Duration, ProviderErrorType> {
+        let start = Instant::now();
+        
+        // Simulate health check (in real implementation, this would make HTTP requests)
+        match provider {
+            Provider::VertexAI => {
+                // Simulate Google Cloud health check
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                Ok(start.elapsed())
+            }
+            Provider::OpenAI => {
+                // Simulate OpenAI API health check
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                Ok(start.elapsed())
+            }
+            Provider::AzureOpenAI => {
+                // Simulate Azure health check
+                tokio::time::sleep(Duration::from_millis(180)).await;
+                Ok(start.elapsed())
+            }
+            Provider::Groq => {
+                // Simulate Groq health check (should be fast)
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                Ok(start.elapsed())
+            }
+            Provider::Mistral => {
+                // Simulate Mistral health check
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                Ok(start.elapsed())
+            }
+            Provider::AwsBedrock => {
+                // Simulate AWS Bedrock health check
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                Ok(start.elapsed())
+            }
+            Provider::Cohere => {
+                // Simulate Cohere health check
+                tokio::time::sleep(Duration::from_millis(140)).await;
+                Ok(start.elapsed())
+            }
+            Provider::Anthropic => {
+                // Anthropic doesn't support health pings
+                Err(ProviderErrorType::ServiceUnavailable)
+            }
+        }
+    }
+
+    /// Log comprehensive health status for all providers
+    async fn log_comprehensive_health_status(
+        health_data: &Arc<RwLock<HashMap<Provider, ProviderHealth>>>
+    ) {
+        if let Ok(health_data) = health_data.read() {
+            let available_count = health_data.values().filter(|h| h.is_available()).count();
+            let total_count = health_data.len();
+            
+            debug!(
+                available_providers = available_count,
+                total_providers = total_count,
+                "Provider health status update"
+            );
+            
+            for (provider, health) in health_data.iter() {
+                debug!(
+                    provider = %provider.display_name(),
+                    status = ?health.status,
+                    success_rate = health.success_rate,
+                    consecutive_failures = health.consecutive_failures,
+                    circuit_breaker = ?health.circuit_breaker_state,
+                    total_requests = health.total_requests,
+                    "Provider health details"
+                );
+            }
+        }
+    }
 }
 
 /// Enhanced health metrics with provider-specific data
@@ -758,14 +891,15 @@ impl HealthMetrics {
                     .map(|health| health.is_available() && health.success_rate > 0.8)
                     .unwrap_or(false)
             })
-            .max_by(|(_, a), (_, b)| {
+            .max_by(|(a_provider, a), (b_provider, b)| {
                 // Compare by success rate first, then by response time
                 a.success_rate.partial_cmp(&b.success_rate)
                     .unwrap_or(std::cmp::Ordering::Equal)
                     .then_with(|| {
                         // Lower average response time is better
-                        let a_time = self.average_response_times.get(a).unwrap_or(&Duration::from_secs(10));
-                        let b_time = self.average_response_times.get(b).unwrap_or(&Duration::from_secs(10));
+                        let default_duration = Duration::from_secs(10);
+                        let a_time = self.average_response_times.get(a_provider).unwrap_or(&default_duration);
+                        let b_time = self.average_response_times.get(b_provider).unwrap_or(&default_duration);
                         b_time.cmp(a_time)
                     })
             })
@@ -1100,85 +1234,3 @@ mod tests {
         assert!(Provider::AwsBedrock.is_european_compliant());
     }
 }
-
-    /// Ping a provider endpoint for health checking
-    async fn ping_provider_endpoint(
-        provider: Provider,
-        config: &ProviderHealthConfig,
-    ) -> Result<Duration, ProviderErrorType> {
-        let start = Instant::now();
-        
-        // Simulate health check (in real implementation, this would make HTTP requests)
-        match provider {
-            Provider::VertexAI => {
-                // Simulate Google Cloud health check
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                Ok(start.elapsed())
-            }
-            Provider::OpenAI => {
-                // Simulate OpenAI API health check
-                tokio::time::sleep(Duration::from_millis(150)).await;
-                Ok(start.elapsed())
-            }
-            Provider::AzureOpenAI => {
-                // Simulate Azure health check
-                tokio::time::sleep(Duration::from_millis(180)).await;
-                Ok(start.elapsed())
-            }
-            Provider::Groq => {
-                // Simulate Groq health check (should be fast)
-                tokio::time::sleep(Duration::from_millis(80)).await;
-                Ok(start.elapsed())
-            }
-            Provider::Mistral => {
-                // Simulate Mistral health check
-                tokio::time::sleep(Duration::from_millis(120)).await;
-                Ok(start.elapsed())
-            }
-            Provider::AwsBedrock => {
-                // Simulate AWS Bedrock health check
-                tokio::time::sleep(Duration::from_millis(250)).await;
-                Ok(start.elapsed())
-            }
-            Provider::Cohere => {
-                // Simulate Cohere health check
-                tokio::time::sleep(Duration::from_millis(140)).await;
-                Ok(start.elapsed())
-            }
-            Provider::Anthropic => {
-                // Anthropic doesn't support health pings
-                Err(ProviderErrorType::ServiceUnavailable)
-            }
-        }
-    }
-
-    /// Log comprehensive health status for all providers
-    async fn log_comprehensive_health_status(
-        health_data: &Arc<RwLock<HashMap<Provider, ProviderHealth>>>
-    ) {
-        if let Ok(health_data) = health_data.read() {
-            let available_count = health_data.values().filter(|h| h.is_available()).count();
-            let total_count = health_data.len();
-            
-            debug!(
-                available_providers = available_count,
-                total_providers = total_count,
-                availability_rate = %format!("{:.1}%", (available_count as f64 / total_count as f64) * 100.0),
-                "Overall provider health status"
-            );
-
-            // Log detailed status for each provider
-            for (provider, health) in health_data.iter() {
-                debug!(
-                    provider = %provider.display_name(),
-                    status = ?health.status,
-                    success_rate = %format!("{:.2}%", health.success_rate * 100.0),
-                    avg_response_time = ?health.average_response_time,
-                    consecutive_failures = health.consecutive_failures,
-                    circuit_breaker = ?health.circuit_breaker_state,
-                    total_requests = health.total_requests,
-                    "Provider health details"
-                );
-            }
-        }
-    }

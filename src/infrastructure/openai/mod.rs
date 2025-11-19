@@ -166,7 +166,7 @@ impl OpenAIProvider {
             }
         };
 
-        let supported_models = available_models
+        let supported_models: Vec<_> = available_models
             .into_iter()
             .filter(|model| self.client.supports_tool_calling(model))
             .map(|model| {

@@ -13,65 +13,73 @@ use axum::{
 impl IntoResponse for PatchError {
     fn into_response(self) -> Response {
         let (status, error_type, message) = match &self {
-            PatchError::IoError { message } => {
-                (StatusCode::INTERNAL_SERVER_ERROR, ErrorType::ServerError, message.clone())
-            }
-            PatchError::InvalidPatchFormat { message } => {
-                (StatusCode::BAD_REQUEST, ErrorType::InvalidRequestError, message.clone())
-            }
-            PatchError::InvalidChunk { message } => {
-                (StatusCode::BAD_REQUEST, ErrorType::InvalidRequestError, message.clone())
-            }
-            PatchError::FileNotFound { path } => {
-                (
-                    StatusCode::NOT_FOUND,
-                    ErrorType::NotFoundError,
-                    format!("File not found: {}", path),
-                )
-            }
-            PatchError::PermissionDenied { message } => {
-                (StatusCode::FORBIDDEN, ErrorType::PermissionError, message.clone())
-            }
-            PatchError::PatchApplicationFailed { message } => {
-                (StatusCode::UNPROCESSABLE_ENTITY, ErrorType::UnprocessableEntityError, message.clone())
-            }
-            PatchError::LineMismatch { line_number, expected, actual } => {
-                (
-                    StatusCode::CONFLICT,
-                    ErrorType::ConflictError,
-                    format!(
-                        "Line mismatch at line {}: expected '{}', found '{}'",
-                        line_number, expected, actual
-                    ),
-                )
-            }
-            PatchError::ContextMismatch { message } => {
-                (StatusCode::CONFLICT, ErrorType::ConflictError, message.clone())
-            }
-            PatchError::BinaryFileNotSupported { path } => {
-                (
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    ErrorType::UnprocessableEntityError,
-                    format!("Binary file operations not supported: {}", path),
-                )
-            }
-            PatchError::BackupFailed { message } => {
-                (StatusCode::INTERNAL_SERVER_ERROR, ErrorType::ServerError, message.clone())
-            }
-            PatchError::SecurityViolation { path } => {
-                (
-                    StatusCode::FORBIDDEN,
-                    ErrorType::PermissionError,
-                    format!("Security violation detected: {}", path),
-                )
-            }
-            PatchError::FileSizeExceeded { path, size } => {
-                (
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    ErrorType::InvalidRequestError,
-                    format!("File size exceeded for {}: {} bytes", path, size),
-                )
-            }
+            PatchError::IoError { message } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorType::ServerError,
+                message.clone(),
+            ),
+            PatchError::InvalidPatchFormat { message } => (
+                StatusCode::BAD_REQUEST,
+                ErrorType::InvalidRequestError,
+                message.clone(),
+            ),
+            PatchError::InvalidChunk { message } => (
+                StatusCode::BAD_REQUEST,
+                ErrorType::InvalidRequestError,
+                message.clone(),
+            ),
+            PatchError::FileNotFound { path } => (
+                StatusCode::NOT_FOUND,
+                ErrorType::NotFoundError,
+                format!("File not found: {}", path),
+            ),
+            PatchError::PermissionDenied { message } => (
+                StatusCode::FORBIDDEN,
+                ErrorType::PermissionError,
+                message.clone(),
+            ),
+            PatchError::PatchApplicationFailed { message } => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ErrorType::UnprocessableEntityError,
+                message.clone(),
+            ),
+            PatchError::LineMismatch {
+                line_number,
+                expected,
+                actual,
+            } => (
+                StatusCode::CONFLICT,
+                ErrorType::ConflictError,
+                format!(
+                    "Line mismatch at line {}: expected '{}', found '{}'",
+                    line_number, expected, actual
+                ),
+            ),
+            PatchError::ContextMismatch { message } => (
+                StatusCode::CONFLICT,
+                ErrorType::ConflictError,
+                message.clone(),
+            ),
+            PatchError::BinaryFileNotSupported { path } => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ErrorType::UnprocessableEntityError,
+                format!("Binary file operations not supported: {}", path),
+            ),
+            PatchError::BackupFailed { message } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorType::ServerError,
+                message.clone(),
+            ),
+            PatchError::SecurityViolation { path } => (
+                StatusCode::FORBIDDEN,
+                ErrorType::PermissionError,
+                format!("Security violation detected: {}", path),
+            ),
+            PatchError::FileSizeExceeded { path, size } => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                ErrorType::InvalidRequestError,
+                format!("File size exceeded for {}: {} bytes", path, size),
+            ),
         };
 
         let error_response = ErrorResponse::new(error_type, message);
@@ -86,42 +94,39 @@ impl From<PatchError> for ErrorResponse {
             PatchError::IoError { message } => (ErrorType::ServerError, message),
             PatchError::InvalidPatchFormat { message } => (ErrorType::InvalidRequestError, message),
             PatchError::InvalidChunk { message } => (ErrorType::InvalidRequestError, message),
-            PatchError::FileNotFound { path } => {
-                (ErrorType::NotFoundError, format!("File not found: {}", path))
-            }
+            PatchError::FileNotFound { path } => (
+                ErrorType::NotFoundError,
+                format!("File not found: {}", path),
+            ),
             PatchError::PermissionDenied { message } => (ErrorType::PermissionError, message),
             PatchError::PatchApplicationFailed { message } => {
                 (ErrorType::UnprocessableEntityError, message)
             }
-            PatchError::LineMismatch { line_number, expected, actual } => {
-                (
-                    ErrorType::ConflictError,
-                    format!(
-                        "Line mismatch at line {}: expected '{}', found '{}'",
-                        line_number, expected, actual
-                    ),
-                )
-            }
+            PatchError::LineMismatch {
+                line_number,
+                expected,
+                actual,
+            } => (
+                ErrorType::ConflictError,
+                format!(
+                    "Line mismatch at line {}: expected '{}', found '{}'",
+                    line_number, expected, actual
+                ),
+            ),
             PatchError::ContextMismatch { message } => (ErrorType::ConflictError, message),
-            PatchError::BinaryFileNotSupported { path } => {
-                (
-                    ErrorType::UnprocessableEntityError,
-                    format!("Binary file operations not supported: {}", path),
-                )
-            }
+            PatchError::BinaryFileNotSupported { path } => (
+                ErrorType::UnprocessableEntityError,
+                format!("Binary file operations not supported: {}", path),
+            ),
             PatchError::BackupFailed { message } => (ErrorType::ServerError, message),
-            PatchError::SecurityViolation { path } => {
-                (
-                    ErrorType::PermissionError,
-                    format!("Security violation detected: {}", path),
-                )
-            }
-            PatchError::FileSizeExceeded { path, size } => {
-                (
-                    ErrorType::InvalidRequestError,
-                    format!("File size exceeded for {}: {} bytes", path, size),
-                )
-            }
+            PatchError::SecurityViolation { path } => (
+                ErrorType::PermissionError,
+                format!("Security violation detected: {}", path),
+            ),
+            PatchError::FileSizeExceeded { path, size } => (
+                ErrorType::InvalidRequestError,
+                format!("File size exceeded for {}: {} bytes", path, size),
+            ),
         };
 
         ErrorResponse::new(error_type, message)
@@ -164,13 +169,15 @@ impl PatchErrorContext {
     /// Convert to error details
     pub fn to_error_details(&self, base_message: &str) -> ErrorDetails {
         let mut message = format!("{}: {}", self.operation, base_message);
-        
+
         if let Some(ref file_path) = self.file_path {
             message = format!("{} (file: {})", message, file_path);
         }
 
         if !self.context.is_empty() {
-            let context_str: Vec<String> = self.context.iter()
+            let context_str: Vec<String> = self
+                .context
+                .iter()
                 .map(|(k, v)| format!("{}={}", k, v))
                 .collect();
             message = format!("{} [{}]", message, context_str.join(", "));
@@ -185,7 +192,11 @@ impl PatchErrorContext {
     }
 
     /// Create an error response with context
-    pub fn create_error_response(&self, error_type: ErrorType, base_message: &str) -> ErrorResponse {
+    pub fn create_error_response(
+        &self,
+        error_type: ErrorType,
+        base_message: &str,
+    ) -> ErrorResponse {
         let details = self.to_error_details(base_message);
         ErrorResponse {
             error: ErrorDetails {
@@ -239,23 +250,8 @@ impl From<PatchError> for PatchErrorWithContext {
 impl IntoResponse for PatchErrorWithContext {
     fn into_response(self) -> Response {
         if let Some(context) = self.context {
-            let error_response = match self.error {
-                PatchError::IoError { ref message } => {
-                    context.create_error_response(ErrorType::ServerError, message)
-                }
-                PatchError::InvalidPatchFormat { ref message } => {
-                    context.create_error_response(ErrorType::InvalidRequestError, message)
-                }
-                PatchError::FileNotFound { ref path } => {
-                    context.create_error_response(
-                        ErrorType::NotFoundError,
-                        &format!("File not found: {}", path),
-                    )
-                }
-                _ => ErrorResponse::from(self.error),
-            };
-
-            let status = match self.error {
+            // Determine status code first before moving the error
+            let status = match &self.error {
                 PatchError::IoError { .. } => StatusCode::INTERNAL_SERVER_ERROR,
                 PatchError::InvalidPatchFormat { .. } => StatusCode::BAD_REQUEST,
                 PatchError::FileNotFound { .. } => StatusCode::NOT_FOUND,
@@ -265,6 +261,20 @@ impl IntoResponse for PatchErrorWithContext {
                 PatchError::ContextMismatch { .. } => StatusCode::CONFLICT,
                 PatchError::FileSizeExceeded { .. } => StatusCode::PAYLOAD_TOO_LARGE,
                 _ => StatusCode::UNPROCESSABLE_ENTITY,
+            };
+
+            let error_response = match self.error {
+                PatchError::IoError { ref message } => {
+                    context.create_error_response(ErrorType::ServerError, message)
+                }
+                PatchError::InvalidPatchFormat { ref message } => {
+                    context.create_error_response(ErrorType::InvalidRequestError, message)
+                }
+                PatchError::FileNotFound { ref path } => context.create_error_response(
+                    ErrorType::NotFoundError,
+                    &format!("File not found: {}", path),
+                ),
+                _ => ErrorResponse::from(self.error),
             };
 
             (status, axum::Json(error_response)).into_response()
@@ -280,11 +290,11 @@ macro_rules! patch_error_with_context {
     ($error:expr, $operation:expr) => {
         PatchErrorWithContext::new($error, PatchErrorContext::new($operation.to_string()))
     };
-    
+
     ($error:expr, $operation:expr, $file:expr) => {
         PatchErrorWithContext::new(
             $error,
-            PatchErrorContext::new($operation.to_string()).with_file_path($file.to_string())
+            PatchErrorContext::new($operation.to_string()).with_file_path($file.to_string()),
         )
     };
 }
@@ -318,9 +328,15 @@ pub mod utils {
             PatchError::FileNotFound { path } => format!("File not found: {}", path),
             PatchError::PermissionDenied { message } => format!("Permission denied: {}", message),
             PatchError::SecurityViolation { path } => format!("Security violation: {}", path),
-            PatchError::InvalidPatchFormat { message } => format!("Invalid patch format: {}", message),
+            PatchError::InvalidPatchFormat { message } => {
+                format!("Invalid patch format: {}", message)
+            }
             PatchError::PatchApplicationFailed { message } => format!("Patch failed: {}", message),
-            PatchError::LineMismatch { line_number, expected, actual } => {
+            PatchError::LineMismatch {
+                line_number,
+                expected,
+                actual,
+            } => {
                 format!(
                     "Line mismatch at line {}: expected '{}', found '{}'",
                     line_number,
@@ -332,7 +348,10 @@ pub mod utils {
         };
 
         if let Some(file) = file_path {
-            format!("Tool '{}' failed for file '{}': {}", tool_name, file, base_message)
+            format!(
+                "Tool '{}' failed for file '{}': {}",
+                tool_name, file, base_message
+            )
         } else {
             format!("Tool '{}' failed: {}", tool_name, base_message)
         }
@@ -359,9 +378,12 @@ mod tests {
         let error = PatchError::FileNotFound {
             path: "test.txt".to_string(),
         };
-        
+
         let error_response: ErrorResponse = error.into();
-        assert!(matches!(error_response.error.error_type, ErrorType::NotFoundError));
+        assert!(matches!(
+            error_response.error.error_type,
+            ErrorType::NotFoundError
+        ));
         assert!(error_response.error.message.contains("test.txt"));
     }
 
@@ -373,7 +395,7 @@ mod tests {
             .with_context("operation", "insert");
 
         let error_details = context.to_error_details("Line insertion failed");
-        
+
         assert!(error_details.message.contains("apply_patch"));
         assert!(error_details.message.contains("src/main.rs"));
         assert!(error_details.message.contains("line=42"));
@@ -386,12 +408,8 @@ mod tests {
         let base_error = PatchError::InvalidPatchFormat {
             message: "Bad format".to_string(),
         };
-        
-        let error_with_context = patch_error_with_context!(
-            base_error,
-            "apply_patch",
-            "test.rs"
-        );
+
+        let error_with_context = patch_error_with_context!(base_error, "apply_patch", "test.rs");
 
         assert!(error_with_context.context.is_some());
         let context = error_with_context.context.unwrap();
@@ -407,11 +425,7 @@ mod tests {
             actual: "different line".to_string(),
         };
 
-        let formatted = utils::format_tool_call_error(
-            "apply_patch",
-            &error,
-            Some("main.rs")
-        );
+        let formatted = utils::format_tool_call_error("apply_patch", &error, Some("main.rs"));
 
         assert!(formatted.contains("apply_patch"));
         assert!(formatted.contains("main.rs"));

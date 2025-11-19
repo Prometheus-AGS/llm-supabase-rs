@@ -237,6 +237,7 @@ impl AzureOpenAIClient {
 
     /// Process tool call results and create continuation messages
     pub fn process_tool_results(&self, results: Vec<ToolCallResult>) -> Result<Value> {
+        use crate::infrastructure::common::tools::ToolCallConverter;
         self.converter.tool_results_to_provider_messages(&results)
     }
 

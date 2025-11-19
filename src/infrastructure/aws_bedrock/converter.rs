@@ -212,13 +212,15 @@ impl BedrockConverter {
                     
                     // Add tool calls if present
                     if let Some(tool_calls) = &message.tool_calls {
-                        for tool_call in tool_calls {
-                            content.push(json!({
-                                "type": "tool_use",
-                                "id": tool_call.id,
-                                "name": tool_call.function.name,
-                                "input": serde_json::from_str::<Value>(&tool_call.function.arguments)?
-                            }));
+                        for tool_call_value in tool_calls {
+                            if let Ok(tool_call) = serde_json::from_value::<ToolCall>(tool_call_value.clone()) {
+                                content.push(json!({
+                                    "type": "tool_use",
+                                    "id": tool_call.id,
+                                    "name": tool_call.function.name,
+                                    "input": serde_json::from_str::<Value>(&tool_call.function.arguments).unwrap_or_default()
+                                }));
+                            }
                         }
                     }
                     
@@ -229,6 +231,19 @@ impl BedrockConverter {
                 }
                 crate::models::common::MessageRole::Tool => {
                     // Find the corresponding tool call ID
+                    if let Some(tool_call_id) = &message.tool_call_id {
+                        claude_messages.push(json!({
+                            "role": "user",
+                            "content": [{
+                                "type": "tool_result",
+                                "tool_use_id": tool_call_id,
+                                "content": message.content
+                            }]
+                        }));
+                    }
+                }
+                crate::models::common::MessageRole::Function => {
+                    // Function role is deprecated, treat as tool
                     if let Some(tool_call_id) = &message.tool_call_id {
                         claude_messages.push(json!({
                             "role": "user",
@@ -282,10 +297,14 @@ impl BedrockConverter {
                     if let Some(tool_calls) = &message.tool_calls {
                         let function_calls: Vec<Value> = tool_calls
                             .iter()
-                            .map(|tc| json!({
-                                "name": tc.function.name,
-                                "arguments": serde_json::from_str::<Value>(&tc.function.arguments).unwrap_or_default()
-                            }))
+                            .filter_map(|tc_value| {
+                                serde_json::from_value::<ToolCall>(tc_value.clone()).ok().map(|tc| {
+                                    json!({
+                                        "name": tc.function.name,
+                                        "arguments": serde_json::from_str::<Value>(&tc.function.arguments).unwrap_or_default()
+                                    })
+                                })
+                            })
                             .collect();
                             
                         assistant_message["function_calls"] = json!(function_calls);
@@ -294,6 +313,14 @@ impl BedrockConverter {
                     llama_messages.push(assistant_message);
                 }
                 crate::models::common::MessageRole::Tool => {
+                    llama_messages.push(json!({
+                        "role": "function",
+                        "name": message.name.as_deref().unwrap_or("unknown"),
+                        "content": message.content
+                    }));
+                }
+                crate::models::common::MessageRole::Function => {
+                    // Function role is deprecated, treat as tool
                     llama_messages.push(json!({
                         "role": "function",
                         "name": message.name.as_deref().unwrap_or("unknown"),

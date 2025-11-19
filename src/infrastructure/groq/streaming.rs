@@ -16,6 +16,7 @@ use tokio_util::io::StreamReader;
 use tracing::{debug, trace, warn, error, info};
 
 use crate::models::response::ChatCompletionChunk;
+use crate::models::common::FinishReason;
 use super::auth::RateLimitInfo;
 use super::types::GroqModel;
 
@@ -70,28 +71,41 @@ impl GroqStreamParser {
         let reader = StreamReader::new(byte_stream.map(|result| {
             result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
         }));
+        let buf_reader = tokio::io::BufReader::new(reader);
 
-        let lines_stream = LinesStream::new(reader.lines());
+        let lines_stream = LinesStream::new(buf_reader.lines());
+        let model = self.model.clone();
+        let chunks_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
 
         // Process SSE lines and convert to chunks with performance optimization
-        let chunk_stream = lines_stream.filter_map(move |line_result| async move {
-            match line_result {
-                Ok(line) => {
-                    self.chunks_processed += 1;
-                    self.process_sse_line(&line).await
-                },
-                Err(e) => {
-                    error!("Error reading line from Groq stream: {}", e);
-                    Some(Err(anyhow::anyhow!("Groq stream read error: {}", e)))
+        let chunks_counter_for_closure = chunks_counter.clone();
+        let model_for_closure = model.clone();
+        let chunk_stream = lines_stream.filter_map(move |line_result| {
+            let chunks_counter = chunks_counter_for_closure.clone();
+            let model = model_for_closure.clone();
+            async move {
+                match line_result {
+                    Ok(line) => {
+                        chunks_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        Self::process_sse_line_static(&line, &model).await
+                    },
+                    Err(e) => {
+                        error!("Error reading line from Groq stream: {}", e);
+                        Some(Err(anyhow::anyhow!("Groq stream read error: {}", e)))
+                    }
                 }
             }
         });
+        
+        // Store counter reference for later access
+        // Note: chunks_processed will be updated asynchronously, we'll read it when needed
+        self.chunks_processed = chunks_counter.load(std::sync::atomic::Ordering::Relaxed);
 
         Ok(chunk_stream)
     }
 
-    /// Process a single Server-Sent Events line with Groq optimizations
-    async fn process_sse_line(&self, line: &str) -> Option<Result<ChatCompletionChunk>> {
+    /// Process a single Server-Sent Events line with Groq optimizations (static version for use in closures)
+    async fn process_sse_line_static(line: &str, model: &Option<String>) -> Option<Result<ChatCompletionChunk>> {
         let line = line.trim();
 
         // Skip empty lines (common in SSE)
@@ -101,12 +115,12 @@ impl GroqStreamParser {
 
         // Handle SSE data lines
         if let Some(data) = line.strip_prefix("data: ") {
-            return self.process_data_line(data).await;
+            return Self::process_data_line_static(data, model).await;
         }
 
         // Handle SSE event type (Groq may send custom events)
         if let Some(event) = line.strip_prefix("event: ") {
-            return self.process_event_line(event).await;
+            return Self::process_event_line_static(event).await;
         }
 
         // Handle SSE id field (useful for Groq request tracking)
@@ -134,8 +148,8 @@ impl GroqStreamParser {
         None
     }
 
-    /// Process SSE event types (Groq-specific events)
-    async fn process_event_line(&self, event: &str) -> Option<Result<ChatCompletionChunk>> {
+    /// Process SSE event types (Groq-specific events) - static version
+    async fn process_event_line_static(event: &str) -> Option<Result<ChatCompletionChunk>> {
         match event.trim() {
             "completion" => {
                 trace!("Groq completion event received");
@@ -152,6 +166,61 @@ impl GroqStreamParser {
             _ => {
                 trace!("Unknown Groq event type: {}", event);
                 None
+            }
+        }
+    }
+
+    /// Process SSE event types (Groq-specific events)
+    async fn process_event_line(&self, event: &str) -> Option<Result<ChatCompletionChunk>> {
+        Self::process_event_line_static(event).await
+    }
+
+    /// Process a data line from the SSE stream with Groq-specific handling (static version)
+    async fn process_data_line_static(data: &str, model: &Option<String>) -> Option<Result<ChatCompletionChunk>> {
+        let data = data.trim();
+
+        // Handle the [DONE] marker (standard SSE completion)
+        if data == "[DONE]" {
+            debug!("Received [DONE] marker, Groq stream completed");
+            return None; // End of stream
+        }
+
+        // Handle Groq error responses in data field
+        if data.starts_with("{\"error\"") {
+            match serde_json::from_str::<Value>(data) {
+                Ok(error_json) => {
+                    let error_msg = error_json.get("error")
+                        .and_then(|e| e.get("message"))
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("Unknown Groq error");
+                    
+                    error!("Groq API error in stream: {}", error_msg);
+                    return Some(Err(anyhow::anyhow!("Groq API error: {}", error_msg)));
+                },
+                Err(e) => {
+                    error!("Failed to parse Groq error response: {}", e);
+                    return Some(Err(anyhow::anyhow!("Groq error parse failure: {}", e)));
+                }
+            }
+        }
+
+        // Parse JSON data (standard chunk format)
+        match serde_json::from_str::<Value>(data) {
+            Ok(json_value) => {
+                trace!("Parsed Groq JSON chunk: {}", json_value);
+                
+                // Convert to ChatCompletionChunk with Groq-specific handling
+                match Self::convert_to_chunk_static(json_value, model).await {
+                    Ok(chunk) => Some(Ok(chunk)),
+                    Err(e) => {
+                        error!("Failed to convert Groq JSON to chunk: {}", e);
+                        Some(Err(e))
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to parse Groq JSON data: {} - Data: {}", e, data);
+                Some(Err(anyhow::anyhow!("Groq JSON parse error: {}", e)))
             }
         }
     }
@@ -215,23 +284,28 @@ impl GroqStreamParser {
         }
     }
 
-    /// Convert JSON value to ChatCompletionChunk with Groq-specific validation
-    async fn convert_to_chunk(&self, json: Value) -> Result<ChatCompletionChunk> {
+    /// Convert JSON value to ChatCompletionChunk with Groq-specific validation (static version)
+    async fn convert_to_chunk_static(json: Value, model: &Option<String>) -> Result<ChatCompletionChunk> {
         // Groq streaming response uses OpenAI-compatible structure
         let mut chunk: ChatCompletionChunk = serde_json::from_value(json)
             .context("Failed to deserialize Groq streaming chunk")?;
 
         // Validate and enhance chunk for Groq
-        self.validate_groq_chunk(&mut chunk)?;
+        Self::validate_groq_chunk_static(&mut chunk, model)?;
 
         trace!("Converted Groq chunk with {} choices", chunk.choices.len());
         Ok(chunk)
     }
 
-    /// Validate and enhance chunk with Groq-specific logic
-    fn validate_groq_chunk(&self, chunk: &mut ChatCompletionChunk) -> Result<()> {
+    /// Convert JSON value to ChatCompletionChunk with Groq-specific validation
+    async fn convert_to_chunk(&self, json: Value) -> Result<ChatCompletionChunk> {
+        Self::convert_to_chunk_static(json, &self.model).await
+    }
+
+    /// Validate and enhance chunk with Groq-specific logic (static version)
+    fn validate_groq_chunk_static(chunk: &mut ChatCompletionChunk, model: &Option<String>) -> Result<()> {
         // Validate model matches expected model
-        if let Some(ref expected_model) = self.model {
+        if let Some(ref expected_model) = model {
             if chunk.model != *expected_model {
                 warn!("Model mismatch in Groq chunk: expected '{}', got '{}'", 
                       expected_model, chunk.model);
@@ -244,11 +318,11 @@ impl GroqStreamParser {
         }
 
         // Check for tool calls in ultra-fast models (might need special handling)
-        if let Some(ref model) = self.model {
-            if self.is_ultra_fast_model(model) {
+        if let Some(ref model_name) = model {
+            if Self::is_ultra_fast_model_static(model_name) {
                 for choice in &chunk.choices {
                     if choice.delta.tool_calls.is_some() {
-                        debug!("Tool calls detected in ultra-fast Groq model: {}", model);
+                        debug!("Tool calls detected in ultra-fast Groq model: {}", model_name);
                     }
                 }
             }
@@ -257,9 +331,19 @@ impl GroqStreamParser {
         Ok(())
     }
 
+    /// Validate and enhance chunk with Groq-specific logic
+    fn validate_groq_chunk(&self, chunk: &mut ChatCompletionChunk) -> Result<()> {
+        Self::validate_groq_chunk_static(chunk, &self.model)
+    }
+
+    /// Check if model is in ultra-fast tier (affects processing) - static version
+    fn is_ultra_fast_model_static(model: &str) -> bool {
+        matches!(model, "llama-3.1-8b-instant" | "llama3-8b-8192")
+    }
+
     /// Check if model is in ultra-fast tier (affects processing)
     fn is_ultra_fast_model(&self, model: &str) -> bool {
-        matches!(model, "llama-3.1-8b-instant" | "llama3-8b-8192")
+        Self::is_ultra_fast_model_static(model)
     }
 
     /// Get streaming performance metrics
@@ -278,6 +362,7 @@ impl GroqStreamParser {
     /// Create a test stream for development/testing with Groq data
     pub fn create_test_stream(model: &str) -> impl Stream<Item = Result<ChatCompletionChunk>> {
         use tokio_stream::iter;
+        use crate::models::common::MessageRole;
 
         let test_chunks = vec![
             // First chunk with role
@@ -286,17 +371,23 @@ impl GroqStreamParser {
                 object: "chat.completion.chunk".to_string(),
                 created: 1699999999,
                 model: model.to_string(),
+                system_fingerprint: None,
                 choices: vec![
                     crate::models::response::ChunkChoice {
                         index: 0,
                         delta: crate::models::response::ChunkDelta {
-                            role: Some("assistant".to_string()),
-                            content: None,
+                            role: MessageRole::Assistant,
+                            content: String::new(),
+                            name: None,
+                            function_call: None,
                             tool_calls: None,
+                            tool_call_id: None,
                         },
+                        logprobs: None,
                         finish_reason: None,
                     }
                 ],
+                usage: None,
             }),
             // Content chunks (Groq sends these very fast)
             Ok(ChatCompletionChunk {
@@ -304,17 +395,23 @@ impl GroqStreamParser {
                 object: "chat.completion.chunk".to_string(),
                 created: 1699999999,
                 model: model.to_string(),
+                system_fingerprint: None,
                 choices: vec![
                     crate::models::response::ChunkChoice {
                         index: 0,
                         delta: crate::models::response::ChunkDelta {
-                            role: None,
-                            content: Some("Hello from Groq! ".to_string()),
+                            role: MessageRole::Assistant,
+                            content: "Hello from Groq! ".to_string(),
+                            name: None,
+                            function_call: None,
                             tool_calls: None,
+                            tool_call_id: None,
                         },
+                        logprobs: None,
                         finish_reason: None,
                     }
                 ],
+                usage: None,
             }),
             // More content
             Ok(ChatCompletionChunk {
@@ -322,17 +419,23 @@ impl GroqStreamParser {
                 object: "chat.completion.chunk".to_string(),
                 created: 1699999999,
                 model: model.to_string(),
+                system_fingerprint: None,
                 choices: vec![
                     crate::models::response::ChunkChoice {
                         index: 0,
                         delta: crate::models::response::ChunkDelta {
-                            role: None,
-                            content: Some("This is ultra-fast inference!".to_string()),
+                            role: MessageRole::Assistant,
+                            content: "This is ultra-fast inference!".to_string(),
+                            name: None,
+                            function_call: None,
                             tool_calls: None,
+                            tool_call_id: None,
                         },
+                        logprobs: None,
                         finish_reason: None,
                     }
                 ],
+                usage: None,
             }),
             // Final chunk with finish reason
             Ok(ChatCompletionChunk {
@@ -340,17 +443,23 @@ impl GroqStreamParser {
                 object: "chat.completion.chunk".to_string(),
                 created: 1699999999,
                 model: model.to_string(),
+                system_fingerprint: None,
                 choices: vec![
                     crate::models::response::ChunkChoice {
                         index: 0,
                         delta: crate::models::response::ChunkDelta {
-                            role: None,
-                            content: None,
+                            role: MessageRole::Assistant,
+                            content: String::new(),
+                            name: None,
+                            function_call: None,
                             tool_calls: None,
+                            tool_call_id: None,
                         },
-                        finish_reason: Some("stop".to_string()),
+                        logprobs: None,
+                        finish_reason: Some(FinishReason::Stop),
                     }
                 ],
+                usage: None,
             }),
         ];
 
@@ -360,6 +469,7 @@ impl GroqStreamParser {
     /// Create a tool calling test stream
     pub fn create_tool_test_stream(model: &str) -> impl Stream<Item = Result<ChatCompletionChunk>> {
         use tokio_stream::iter;
+        use crate::models::common::MessageRole;
 
         let test_chunks = vec![
             // Tool call chunk
@@ -368,27 +478,33 @@ impl GroqStreamParser {
                 object: "chat.completion.chunk".to_string(),
                 created: 1699999999,
                 model: model.to_string(),
+                system_fingerprint: None,
                 choices: vec![
                     crate::models::response::ChunkChoice {
                         index: 0,
                         delta: crate::models::response::ChunkDelta {
-                            role: Some("assistant".to_string()),
-                            content: None,
+                            role: MessageRole::Assistant,
+                            content: String::new(),
+                            name: None,
+                            function_call: None,
                             tool_calls: Some(vec![
-                                crate::models::response::ChunkToolCall {
-                                    index: 0,
-                                    id: Some("call_groq123".to_string()),
-                                    tool_type: Some("function".to_string()),
-                                    function: Some(crate::models::response::ChunkFunction {
-                                        name: Some("get_weather".to_string()),
-                                        arguments: Some("{\"location\": \"San Francisco\"}".to_string()),
-                                    }),
-                                }
+                                serde_json::json!({
+                                    "index": 0,
+                                    "id": "call_groq123",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "get_weather",
+                                        "arguments": "{\"location\": \"San Francisco\"}"
+                                    }
+                                })
                             ]),
+                            tool_call_id: None,
                         },
-                        finish_reason: Some("tool_calls".to_string()),
+                        logprobs: None,
+                        finish_reason: Some(FinishReason::ToolCalls),
                     }
                 ],
+                usage: None,
             }),
         ];
 

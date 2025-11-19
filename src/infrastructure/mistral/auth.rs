@@ -182,9 +182,9 @@ impl MistralAuth {
         );
 
         // User-Agent header
-        let user_agent = self.config.user_agent
-            .as_ref()
-            .unwrap_or(&"LLM-Supabase-RS/1.0 (Mistral)".to_string());
+        let default_ua = "LLM-Supabase-RS/1.0 (Mistral)";
+        let user_agent = self.config.user_agent.as_deref().unwrap_or(default_ua);
+        
         headers.insert(
             USER_AGENT,
             HeaderValue::from_str(user_agent)
@@ -194,14 +194,14 @@ impl MistralAuth {
         // Add European compliance headers if enabled
         if self.config.uses_gdpr_mode() {
             headers.insert(
-                HeaderValue::from_static("X-GDPR-Mode"),
+                "X-GDPR-Mode",
                 HeaderValue::from_static("enabled")
             );
         }
 
         if self.config.prefers_eu_residency() {
             headers.insert(
-                HeaderValue::from_static("X-EU-Residency"),
+                "X-EU-Residency",
                 HeaderValue::from_static("preferred")
             );
         }
@@ -322,7 +322,14 @@ impl MistralAuth {
             } else {
                 0.0
             },
-            last_request: tracker.last_request,
+            last_request: tracker.last_request.map(|_| {
+                // Return current time since Instant doesn't track absolute time
+                // In production, you'd want to store SystemTime instead
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64
+            }),
         })
     }
 
@@ -404,8 +411,9 @@ pub struct ComplianceStats {
     /// GDPR compliance rate (percentage)
     pub gdpr_compliance_rate: f64,
 
-    /// Timestamp of last request
-    pub last_request: Option<Instant>,
+    /// Timestamp of last request (as milliseconds since epoch)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_request: Option<u64>,
 }
 
 /// Current rate limit status

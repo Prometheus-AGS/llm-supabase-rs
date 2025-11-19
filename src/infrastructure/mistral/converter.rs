@@ -247,7 +247,7 @@ impl ToolCallConverter for MistralConverter {
         let tool_calls: Vec<ToolCall> = serde_json::from_value(provider_data.clone())
             .context("Failed to parse Mistral tool calls")?;
         
-        let unified_calls = tool_calls.into_iter().map(|tc| {
+        let unified_calls: Vec<UnifiedToolCall> = tool_calls.into_iter().map(|tc| {
             let arguments = serde_json::from_str(&tc.function.arguments)
                 .unwrap_or_else(|_| serde_json::Value::String(tc.function.arguments.clone()));
             
@@ -269,7 +269,7 @@ impl ToolCallConverter for MistralConverter {
     
     /// Convert unified tool calls to OpenAI format (for Mistral compatibility)
     fn unified_to_openai_tool_calls(&self, unified_calls: &[UnifiedToolCall]) -> Vec<ToolCall> {
-        let tool_calls = unified_calls.iter().map(|uc| {
+        let tool_calls: Vec<ToolCall> = unified_calls.iter().map(|uc| {
             let arguments = match &uc.arguments {
                 Value::String(s) => s.clone(),
                 other => serde_json::to_string(other).unwrap_or_default(),

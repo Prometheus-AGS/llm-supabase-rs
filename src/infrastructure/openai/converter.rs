@@ -1,11 +1,15 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::pin::Pin;
+use tokio_stream::Stream;
 use tracing::{debug, trace};
 
 use crate::infrastructure::common::tools::{ToolCallConverter, UnifiedToolCall, ToolCallResult};
+use crate::infrastructure::common::converter::{ProviderConverter, StreamingConverter};
 use crate::models::request::ChatCompletionRequest;
-use crate::models::response::ChatCompletionResponse;
+use crate::models::response::{ChatCompletionResponse, ChatCompletionChunk};
 use crate::models::common::{ToolDefinition, ChatMessage};
 
 /// OpenAI tool call converter - leverages existing infrastructure
@@ -105,7 +109,7 @@ impl OpenAIConverter {
     /// Get the finish reason from the response
     pub fn get_finish_reason(&self, response: &ChatCompletionResponse) -> Option<String> {
         response.choices.first()
-            .and_then(|choice| choice.finish_reason.clone())
+            .and_then(|choice| Some(choice.finish_reason.to_string()))
     }
 
     /// Check if the response indicates tool calls are needed
@@ -205,6 +209,105 @@ impl OpenAIConverter {
                 max_tool_calls: None,
             },
         }
+    }
+    
+    /// Helper for ToolCallManager access
+    pub fn provider_tool_calls_to_unified(&self, provider_data: Value) -> Result<Vec<UnifiedToolCall>> {
+        self.tool_converter.provider_tool_calls_to_unified(&provider_data)
+    }
+    
+    /// Helper for ToolCallManager access
+    pub fn tool_results_to_provider_messages(&self, results: &[ToolCallResult]) -> Result<Value> {
+        self.tool_converter.tool_results_to_provider_messages(results)
+    }
+}
+
+/// Simple error type for OpenAI provider
+#[derive(Debug)]
+pub struct OpenAIProviderError {
+    message: String,
+}
+
+impl std::fmt::Display for OpenAIProviderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for OpenAIProviderError {}
+
+#[async_trait]
+impl ProviderConverter for OpenAIConverter {
+    type ProviderRequest = ChatCompletionRequest;
+    type ProviderResponse = ChatCompletionResponse;
+    type ProviderStreamChunk = ChatCompletionChunk;
+    type ProviderError = OpenAIProviderError;
+
+    fn openai_to_provider_request(&self, request: &ChatCompletionRequest) -> Result<Self::ProviderRequest> {
+        Ok(request.clone())
+    }
+
+    fn openai_to_provider_streaming_request(&self, request: &ChatCompletionRequest) -> Result<Self::ProviderRequest> {
+        let mut req = request.clone();
+        req.stream = Some(true);
+        Ok(req)
+    }
+
+    fn provider_to_openai_response(&self, response: &Self::ProviderResponse, _request_id: &str, _model: &str, _original_request: &ChatCompletionRequest) -> Result<ChatCompletionResponse> {
+        Ok(response.clone())
+    }
+
+    fn provider_chunk_to_openai_chunk(&self, chunk: &Self::ProviderStreamChunk, _request_id: &str, _model: &str) -> Result<Option<ChatCompletionChunk>> {
+        Ok(Some(chunk.clone()))
+    }
+
+    fn provider_name(&self) -> &'static str {
+        "openai"
+    }
+
+    fn supported_models(&self) -> Vec<String> {
+        vec![
+            "gpt-4o".to_string(),
+            "gpt-4o-mini".to_string(),
+            "gpt-4-turbo".to_string(),
+            "gpt-3.5-turbo".to_string(),
+        ]
+    }
+}
+
+#[async_trait]
+impl StreamingConverter for OpenAIConverter {
+    type ProviderStream = std::pin::Pin<Box<dyn Stream<Item = Result<Self::ProviderStreamChunk, Self::ProviderError>> + Send>>;
+
+    async fn response_to_stream(
+        &self,
+        response: reqwest::Response,
+    ) -> Result<Self::ProviderStream> {
+        use crate::infrastructure::openai::streaming::OpenAIStreamParser;
+        use futures_util::StreamExt;
+        let parser = OpenAIStreamParser::new();
+        let stream = parser.parse_stream(response.bytes_stream()).await?;
+        // Convert anyhow::Error to OpenAIProviderError
+        let converted_stream = stream.map(|result| {
+            result.map_err(|e| OpenAIProviderError {
+                message: format!("Stream error: {}", e),
+            })
+        });
+        Ok(Box::pin(converted_stream))
+    }
+
+    async fn process_stream(
+        &self,
+        stream: Self::ProviderStream,
+        _request_id: String,
+        _model: String,
+    ) -> Pin<Box<dyn Stream<Item = Result<ChatCompletionChunk, anyhow::Error>> + Send>> {
+        use futures_util::StreamExt;
+        // Convert OpenAIProviderError to anyhow::Error
+        let converted_stream = stream.map(|result| {
+            result.map_err(|e| anyhow::anyhow!("Provider error: {}", e))
+        });
+        Box::pin(converted_stream)
     }
 }
 

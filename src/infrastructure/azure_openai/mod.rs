@@ -169,7 +169,7 @@ impl AzureOpenAIProvider {
             self.config.deployment.clone(),
         ];
 
-        let supported_models = available_deployments
+        let supported_models: Vec<_> = available_deployments
             .into_iter()
             .filter(|deployment| self.client.supports_tool_calling(deployment))
             .map(|deployment| {

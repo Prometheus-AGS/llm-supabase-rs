@@ -78,6 +78,7 @@ pub trait ToolCallConverter {
 }
 
 /// OpenAI tool call converter (pass-through since we use OpenAI as the standard)
+#[derive(Debug, Clone)]
 pub struct OpenAIToolConverter;
 
 impl ToolCallConverter for OpenAIToolConverter {
@@ -291,6 +292,11 @@ impl ToolCallManager {
     /// Reset the tool call state
     pub fn reset(&mut self) {
         self.state = ToolCallState::None;
+    }
+
+    /// Access the converter
+    pub fn converter(&self) -> &dyn ToolCallConverter {
+        &*self.converter
     }
 }
 

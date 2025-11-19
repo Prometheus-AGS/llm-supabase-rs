@@ -4,6 +4,7 @@
 
 pub mod adaptive_formatter;
 pub mod client_detection;
+pub mod client;
 pub mod converter;
 pub mod streaming;
 pub mod streaming_v2;
@@ -12,6 +13,7 @@ pub mod tools;
 
 pub use adaptive_formatter::*;
 pub use client_detection::*;
+pub use client::GenericLLMClient;
 pub use converter::{ProviderConverter, StreamingConverter, ProviderErrorHandler};
 pub use converter::utils as converter_utils;
 pub use streaming::*;

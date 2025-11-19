@@ -3,6 +3,7 @@ use futures_util::{Stream, StreamExt};
 use reqwest::Response;
 use serde_json::Value;
 use std::pin::Pin;
+use tokio::io::AsyncBufReadExt;
 use tokio_stream::wrappers::LinesStream;
 use tokio_util::io::StreamReader;
 use tracing::{debug, trace, warn, error};
@@ -33,13 +34,15 @@ impl OpenAIStreamParser {
         let reader = StreamReader::new(byte_stream.map(|result| {
             result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
         }));
+        let buf_reader = tokio::io::BufReader::new(reader);
 
-        let lines_stream = LinesStream::new(reader.lines());
+        let lines_stream = LinesStream::new(buf_reader.lines());
 
         // Process SSE lines and convert to chunks
-        let chunk_stream = lines_stream.filter_map(|line_result| async move {
+        // Note: We can't borrow self in the closure, so we use a static method approach
+        let chunk_stream = lines_stream.filter_map(move |line_result| async move {
             match line_result {
-                Ok(line) => self.process_sse_line(&line).await,
+                Ok(line) => Self::process_sse_line_static(&line).await,
                 Err(e) => {
                     error!("Error reading line from stream: {}", e);
                     Some(Err(anyhow::anyhow!("Stream read error: {}", e)))
@@ -50,8 +53,18 @@ impl OpenAIStreamParser {
         Ok(chunk_stream)
     }
 
+    /// Process a single Server-Sent Events line (static version for use in closures)
+    async fn process_sse_line_static(line: &str) -> Option<Result<ChatCompletionChunk>> {
+        Self::process_sse_line_impl(line).await
+    }
+
     /// Process a single Server-Sent Events line
     async fn process_sse_line(&self, line: &str) -> Option<Result<ChatCompletionChunk>> {
+        Self::process_sse_line_impl(line).await
+    }
+
+    /// Internal implementation
+    async fn process_sse_line_impl(line: &str) -> Option<Result<ChatCompletionChunk>> {
         let line = line.trim();
 
         // Skip empty lines
@@ -61,7 +74,7 @@ impl OpenAIStreamParser {
 
         // Handle SSE data lines
         if let Some(data) = line.strip_prefix("data: ") {
-            return self.process_data_line(data).await;
+            return Self::process_data_line_static(data).await;
         }
 
         // Skip other SSE fields (event:, id:, retry:, etc.)
@@ -75,8 +88,8 @@ impl OpenAIStreamParser {
         None
     }
 
-    /// Process a data line from the SSE stream
-    async fn process_data_line(&self, data: &str) -> Option<Result<ChatCompletionChunk>> {
+    /// Process a data line from the SSE stream (static version)
+    async fn process_data_line_static(data: &str) -> Option<Result<ChatCompletionChunk>> {
         let data = data.trim();
 
         // Handle the [DONE] marker
@@ -91,7 +104,7 @@ impl OpenAIStreamParser {
                 trace!("Parsed JSON chunk: {}", json_value);
                 
                 // Convert to ChatCompletionChunk
-                match self.convert_to_chunk(json_value).await {
+                match Self::convert_to_chunk_static(json_value).await {
                     Ok(chunk) => Some(Ok(chunk)),
                     Err(e) => {
                         error!("Failed to convert JSON to chunk: {}", e);
@@ -106,8 +119,13 @@ impl OpenAIStreamParser {
         }
     }
 
-    /// Convert JSON value to ChatCompletionChunk
-    async fn convert_to_chunk(&self, json: Value) -> Result<ChatCompletionChunk> {
+    /// Process a data line from the SSE stream
+    async fn process_data_line(&self, data: &str) -> Option<Result<ChatCompletionChunk>> {
+        Self::process_data_line_static(data).await
+    }
+
+    /// Convert JSON value to ChatCompletionChunk (static version)
+    async fn convert_to_chunk_static(json: Value) -> Result<ChatCompletionChunk> {
         // OpenAI streaming response structure
         let chunk: ChatCompletionChunk = serde_json::from_value(json)
             .context("Failed to deserialize OpenAI streaming chunk")?;
@@ -315,8 +333,8 @@ impl OpenAIStreamUtils {
 
         for chunk in chunks {
             for choice in &chunk.choices {
-                if let Some(ref delta_content) = choice.delta.content {
-                    content.push_str(delta_content);
+                if !choice.delta.content.is_empty() {
+                    content.push_str(&choice.delta.content);
                 }
             }
         }
@@ -338,7 +356,7 @@ impl OpenAIStreamUtils {
         for chunk in chunks.iter().rev() {
             for choice in &chunk.choices {
                 if let Some(ref reason) = choice.finish_reason {
-                    return Some(reason.clone());
+                    return Some(reason.to_string());
                 }
             }
         }

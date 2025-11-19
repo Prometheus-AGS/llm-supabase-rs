@@ -62,7 +62,7 @@ pub enum ToolCallStreamState {
 }
 
 /// Partial tool call being accumulated during streaming
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PartialToolCall {
     /// Tool call ID
     pub id: Option<String>,
@@ -134,7 +134,8 @@ pub struct MistralStreamMetadata {
     /// Chunk sequence number
     pub chunk_number: u64,
     
-    /// Processing timestamp
+    /// Processing timestamp (as milliseconds since Unix epoch)
+    #[serde(skip, default = "tokio::time::Instant::now")]
     pub timestamp: Instant,
     
     /// European compliance information
@@ -392,7 +393,7 @@ impl MistralStreamParser {
     fn is_final_chunk(&self, chunk: &ChatCompletionChunk) -> bool {
         chunk.choices.iter().any(|choice| {
             choice.finish_reason.is_some() || 
-            choice.delta.content.as_ref().map_or(false, |c| c.is_empty())
+            choice.delta.content.is_empty()
         })
     }
 
@@ -561,9 +562,7 @@ impl MistralStreamUtils {
         
         for chunk in chunks {
             if let Some(choice) = chunk.chunk.choices.first() {
-                if let Some(ref delta_content) = choice.delta.content {
-                    content.push_str(delta_content);
-                }
+                content.push_str(&choice.delta.content);
             }
         }
 

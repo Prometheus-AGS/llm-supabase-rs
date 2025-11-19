@@ -9,6 +9,7 @@ use futures_util::{Stream, StreamExt};
 use reqwest::Response;
 use serde_json::Value;
 use std::pin::Pin;
+use tokio::io::AsyncBufReadExt;
 use tokio_stream::wrappers::LinesStream;
 use tokio_util::io::StreamReader;
 use tracing::{debug, trace, warn, error};
@@ -40,13 +41,15 @@ impl AzureOpenAIStreamParser {
         let reader = StreamReader::new(byte_stream.map(|result| {
             result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
         }));
+        let buf_reader = tokio::io::BufReader::new(reader);
 
-        let lines_stream = LinesStream::new(reader.lines());
+        let lines_stream = LinesStream::new(buf_reader.lines());
 
         // Process SSE lines and convert to chunks
-        let chunk_stream = lines_stream.filter_map(|line_result| async move {
+        // Note: We can't borrow self in the closure, so we use a static method approach
+        let chunk_stream = lines_stream.filter_map(move |line_result| async move {
             match line_result {
-                Ok(line) => self.process_sse_line(&line).await,
+                Ok(line) => Self::process_sse_line_static(&line).await,
                 Err(e) => {
                     error!("Error reading line from Azure OpenAI stream: {}", e);
                     Some(Err(anyhow::anyhow!("Stream read error: {}", e)))
@@ -57,8 +60,8 @@ impl AzureOpenAIStreamParser {
         Ok(chunk_stream)
     }
 
-    /// Process a single Server-Sent Events line
-    async fn process_sse_line(&self, line: &str) -> Option<Result<ChatCompletionChunk>> {
+    /// Process a single Server-Sent Events line (static version for use in closures)
+    async fn process_sse_line_static(line: &str) -> Option<Result<ChatCompletionChunk>> {
         let line = line.trim();
 
         // Skip empty lines
@@ -68,7 +71,7 @@ impl AzureOpenAIStreamParser {
 
         // Handle SSE data lines
         if let Some(data) = line.strip_prefix("data: ") {
-            return self.process_data_line(data).await;
+            return Self::process_data_line_static(data).await;
         }
 
         // Skip other SSE fields (event:, id:, retry:, etc.)
@@ -82,8 +85,13 @@ impl AzureOpenAIStreamParser {
         None
     }
 
-    /// Process a data line from the SSE stream
-    async fn process_data_line(&self, data: &str) -> Option<Result<ChatCompletionChunk>> {
+    /// Process a single Server-Sent Events line
+    async fn process_sse_line(&self, line: &str) -> Option<Result<ChatCompletionChunk>> {
+        Self::process_sse_line_static(line).await
+    }
+
+    /// Process a data line from the SSE stream (static version)
+    async fn process_data_line_static(data: &str) -> Option<Result<ChatCompletionChunk>> {
         let data = data.trim();
 
         // Handle the [DONE] marker
@@ -98,7 +106,7 @@ impl AzureOpenAIStreamParser {
                 trace!("Parsed Azure OpenAI JSON chunk: {}", json_value);
                 
                 // Convert to ChatCompletionChunk
-                match self.convert_to_chunk(json_value).await {
+                match Self::convert_to_chunk_static(json_value).await {
                     Ok(chunk) => Some(Ok(chunk)),
                     Err(e) => {
                         error!("Failed to convert Azure OpenAI JSON to chunk: {}", e);
@@ -113,14 +121,24 @@ impl AzureOpenAIStreamParser {
         }
     }
 
-    /// Convert JSON value to ChatCompletionChunk
-    async fn convert_to_chunk(&self, json: Value) -> Result<ChatCompletionChunk> {
+    /// Process a data line from the SSE stream
+    async fn process_data_line(&self, data: &str) -> Option<Result<ChatCompletionChunk>> {
+        Self::process_data_line_static(data).await
+    }
+
+    /// Convert JSON value to ChatCompletionChunk (static version)
+    async fn convert_to_chunk_static(json: Value) -> Result<ChatCompletionChunk> {
         // Azure OpenAI streaming response structure (identical to OpenAI)
         let chunk: ChatCompletionChunk = serde_json::from_value(json)
             .context("Failed to deserialize Azure OpenAI streaming chunk")?;
 
         trace!("Converted Azure OpenAI chunk with {} choices", chunk.choices.len());
         Ok(chunk)
+    }
+
+    /// Convert JSON value to ChatCompletionChunk
+    async fn convert_to_chunk(&self, json: Value) -> Result<ChatCompletionChunk> {
+        Self::convert_to_chunk_static(json).await
     }
 
     /// Check if a chunk contains tool calls
@@ -288,14 +306,14 @@ impl AzureOpenAIStreamParser {
                             name: None,
                             function_call: None,
                             tool_calls: Some(vec![
-                                crate::shared::types::ToolCall {
-                                    id: "call_test123".to_string(),
-                                    tool_type: "function".to_string(),
-                                    function: crate::shared::types::FunctionCall {
-                                        name: "get_weather".to_string(),
-                                        arguments: r#"{"location": "San Francisco"}"#.to_string(),
-                                    },
-                                }
+                                serde_json::json!({
+                                    "id": "call_test123",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "get_weather",
+                                        "arguments": r#"{"location": "San Francisco"}"#
+                                    }
+                                })
                             ]),
                             tool_call_id: None,
                         },
@@ -390,9 +408,9 @@ impl AzureOpenAIStreamUtils {
         let message = ChatCompletionMessage {
             role: MessageRole::Assistant,
             content: if content_parts.is_empty() {
-                None
+                String::new()
             } else {
-                Some(content_parts.join(""))
+                content_parts.join("")
             },
             name: None,
             function_call: None,
@@ -428,7 +446,7 @@ impl AzureOpenAIStreamUtils {
         };
 
         debug!("Collected Azure OpenAI streaming response with {} content characters", 
-               response.choices[0].message.content.as_ref().map(|c| c.len()).unwrap_or(0));
+               response.choices[0].message.content.len());
 
         Ok(response)
     }

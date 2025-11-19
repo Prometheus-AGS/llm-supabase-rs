@@ -253,7 +253,10 @@ impl CohereClient {
             max_tokens: request.max_tokens,
             top_p: request.top_p,
             top_k: None, // Cohere-specific parameter
-            stop_sequences: request.stop.clone(),
+            stop_sequences: request.stop.as_ref().map(|stop| match stop {
+                crate::models::request::Stop::String(s) => vec![s.clone()],
+                crate::models::request::Stop::Array(arr) => arr.clone(),
+            }),
             preamble: self.extract_system_message(&request.messages),
         })
     }
@@ -267,7 +270,10 @@ impl CohereClient {
         // Handle tool calls if present
         let (message_content, tool_calls) = if let Some(cohere_tool_calls) = &cohere_response.tool_calls {
             let openai_tool_calls = self.converter.cohere_to_openai_tool_calls(cohere_tool_calls);
-            (None, Some(openai_tool_calls))
+            let tool_calls_value: Vec<serde_json::Value> = openai_tool_calls.iter()
+                .map(|tc| serde_json::to_value(tc).unwrap_or_default())
+                .collect();
+            (None, Some(tool_calls_value))
         } else {
             (Some(cohere_response.text.clone()), None)
         };
@@ -315,7 +321,7 @@ impl CohereClient {
     /// Extract tool results from tool messages
     fn extract_tool_results_from_messages(&self, messages: &[ChatMessage]) -> Result<Option<Vec<CohereToolResult>>> {
         let tool_messages: Vec<&ChatMessage> = messages.iter()
-            .filter(|msg| msg.role == "tool")
+            .filter(|msg| msg.role == MessageRole::Tool)
             .collect();
         
         if tool_messages.is_empty() {
@@ -348,7 +354,7 @@ impl CohereClient {
     /// Extract system message as preamble
     fn extract_system_message(&self, messages: &[ChatMessage]) -> Option<String> {
         messages.iter()
-            .find(|msg| msg.role == "system")
+            .find(|msg| msg.role == MessageRole::System)
             .map(|msg| msg.content.clone())
     }
     

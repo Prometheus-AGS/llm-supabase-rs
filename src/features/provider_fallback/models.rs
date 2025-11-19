@@ -403,7 +403,7 @@ pub struct ProviderRequirements {
 }
 
 /// Routing strategy for intelligent provider selection
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RoutingStrategy {
     /// Balance speed, quality, and reliability (default)
     Balanced,
@@ -708,6 +708,26 @@ pub enum ProviderErrorType {
     Unknown { message: String },
 }
 
+impl std::fmt::Display for ProviderErrorType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProviderErrorType::Authentication => write!(f, "Authentication error"),
+            ProviderErrorType::Authorization => write!(f, "Authorization error"),
+            ProviderErrorType::RateLimit { reset_time } => {
+                write!(f, "Rate limit exceeded, resets at {:?}", reset_time)
+            }
+            ProviderErrorType::QuotaExceeded => write!(f, "Quota exceeded"),
+            ProviderErrorType::ModelNotAvailable => write!(f, "Model not available"),
+            ProviderErrorType::ServiceUnavailable => write!(f, "Service unavailable"),
+            ProviderErrorType::Timeout => write!(f, "Request timeout"),
+            ProviderErrorType::NetworkError => write!(f, "Network error"),
+            ProviderErrorType::InvalidRequest => write!(f, "Invalid request"),
+            ProviderErrorType::InternalError => write!(f, "Internal error"),
+            ProviderErrorType::Unknown { message } => write!(f, "Unknown error: {}", message),
+        }
+    }
+}
+
 impl ProviderErrorType {
     /// Convert to OpenAI-compatible error type
     pub fn to_openai_error(&self) -> ErrorType {
@@ -813,7 +833,7 @@ impl Default for CircuitBreakerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FallbackConfig {
     pub enabled: bool,
-_strategy: RoutingStrategy,
+    pub routing_strategy: RoutingStrategy,
     pub provider_priority: Vec<Provider>,
     pub retry_config: RetryConfig,
     pub circuit_breaker_config: CircuitBreakerConfig,

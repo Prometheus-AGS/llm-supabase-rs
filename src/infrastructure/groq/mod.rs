@@ -175,7 +175,7 @@ impl GroqProvider {
             }
         };
 
-        let supported_models = available_models
+        let supported_models: Vec<_> = available_models
             .into_iter()
             .filter_map(|model_name| {
                 GroqModel::get_model(&model_name).map(|model| {

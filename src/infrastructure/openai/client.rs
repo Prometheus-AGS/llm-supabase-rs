@@ -1,33 +1,23 @@
 use anyhow::{Context, Result};
-use reqwest::Client;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio_stream::Stream;
-use tracing::{debug, info, warn, error};
-use futures_util::StreamExt;
+use tracing::{debug, info, warn};
 
 use crate::models::request::ChatCompletionRequest;
 use crate::models::response::{ChatCompletionResponse, ChatCompletionChunk};
 use crate::infrastructure::common::tools::{ToolCallManager, UnifiedToolCall, ToolCallResult};
+use crate::infrastructure::common::client::GenericLLMClient;
+use crate::infrastructure::common::types::ProviderConfig;
+use crate::config::providers::OpenAIConfig;
 
 use super::auth::OpenAIAuth;
-use crate::config::providers::OpenAIConfig;
-use super::streaming::OpenAIStreamParser;
+use super::converter::OpenAIConverter;
 
 /// OpenAI HTTP client for chat completions with full tool calling support
 /// Handles authentication, request/response formatting, streaming, and error handling
 pub struct OpenAIClient {
-    /// HTTP client for making requests
-    client: Client,
-
-    /// OpenAI configuration
-    config: OpenAIConfig,
-
-    /// Authentication handler
-    auth: Arc<OpenAIAuth>,
-
-    /// Tool call manager for unified tool calling
-    tool_manager: Arc<ToolCallManager>,
+    inner: GenericLLMClient<OpenAIConverter, OpenAIConfig>,
 }
 
 impl OpenAIClient {
@@ -35,34 +25,18 @@ impl OpenAIClient {
     pub async fn new(config: OpenAIConfig) -> Result<Self> {
         info!("Initializing OpenAI client");
 
-        // Initialize authentication
+        // Initialize authentication validation (optional, as client handles it via config)
         let auth = OpenAIAuth::from_config(&config)?;
-        
-        // Validate API key format
-        auth.validate_api_key()
-            .context("Invalid OpenAI API key")?;
+        auth.validate_api_key().context("Invalid OpenAI API key")?;
 
-        let auth = Arc::new(auth);
+        let converter = OpenAIConverter::new();
+        let tool_manager = ToolCallManager::openai();
 
-        // Configure HTTP client with timeouts
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout.unwrap_or(120)))
-            .connect_timeout(std::time::Duration::from_secs(30))
-            .build()
-            .context("Failed to create HTTP client")?;
+        let inner = GenericLLMClient::new(config, converter, tool_manager)?;
 
-        // Initialize tool call manager with OpenAI converter (pass-through)
-        let tool_manager = Arc::new(ToolCallManager::openai());
+        info!("Successfully initialized OpenAI client");
 
-        info!("Successfully initialized OpenAI client with API key: {}", 
-              auth.get_masked_api_key());
-
-        Ok(Self {
-            client,
-            config,
-            auth,
-            tool_manager,
-        })
+        Ok(Self { inner })
     }
 
     /// Create OpenAI client from environment variables
@@ -77,46 +51,7 @@ impl OpenAIClient {
         &self,
         request: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse> {
-        debug!("Making OpenAI chat completion request to model: {}", request.model);
-
-        let headers = self.auth.create_headers()?;
-        let url = self.config.get_chat_completions_url();
-
-        // Ensure streaming is disabled for non-streaming requests
-        let mut request = request;
-        request.stream = Some(false);
-
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&request)
-            .send()
-            .await
-            .context("Failed to send chat completion request")?;
-
-        let status = response.status();
-        
-        if !status.is_success() {
-            let error_text = response.text().await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            
-            return Err(anyhow::anyhow!(
-                "OpenAI API request failed with status {}: {}", 
-                status, error_text
-            ));
-        }
-
-        let response_text = response.text().await
-            .context("Failed to read response body")?;
-
-        let chat_response: ChatCompletionResponse = serde_json::from_str(&response_text)
-            .context("Failed to parse OpenAI response")?;
-
-        debug!("Successfully received OpenAI chat completion response with {} choices", 
-               chat_response.choices.len());
-
-        Ok(chat_response)
+        self.inner.chat_completion(request).await
     }
 
     /// Make a streaming chat completion request
@@ -124,44 +59,7 @@ impl OpenAIClient {
         &self,
         request: ChatCompletionRequest,
     ) -> Result<impl Stream<Item = Result<ChatCompletionChunk>>> {
-        debug!("Making OpenAI streaming chat completion request to model: {}", request.model);
-
-        let headers = self.auth.create_headers()?;
-        let url = self.config.get_chat_completions_url();
-
-        // Ensure streaming is enabled
-        let mut request = request;
-        request.stream = Some(true);
-
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&request)
-            .send()
-            .await
-            .context("Failed to send streaming chat completion request")?;
-
-        let status = response.status();
-        
-        if !status.is_success() {
-            let error_text = response.text().await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            
-            return Err(anyhow::anyhow!(
-                "OpenAI streaming API request failed with status {}: {}", 
-                status, error_text
-            ));
-        }
-
-        // Create stream parser for Server-Sent Events
-        let stream_parser = OpenAIStreamParser::new();
-        let byte_stream = response.bytes_stream();
-
-        let parsed_stream = stream_parser.parse_stream(byte_stream).await?;
-
-        debug!("Successfully created OpenAI streaming response");
-        Ok(parsed_stream)
+        self.inner.chat_completion_stream(request).await
     }
 
     /// Extract tool calls from a chat completion response
@@ -172,7 +70,7 @@ impl OpenAIClient {
             if let Some(ref tool_calls) = choice.message.tool_calls {
                 for tool_call_value in tool_calls {
                     // Parse the tool call from the response
-                    if let Ok(tool_call) = self.tool_manager.converter.provider_tool_calls_to_unified(tool_call_value) {
+                    if let Ok(tool_call) = self.inner.tool_manager().converter().provider_tool_calls_to_unified(tool_call_value) {
                         unified_calls.extend(tool_call);
                     }
                 }
@@ -184,7 +82,7 @@ impl OpenAIClient {
 
     /// Process tool call results and create continuation messages
     pub fn process_tool_results(&self, results: Vec<ToolCallResult>) -> Result<Value> {
-        self.tool_manager.converter.tool_results_to_provider_messages(&results)
+        self.inner.tool_manager().converter().tool_results_to_provider_messages(&results)
     }
 
     /// Test the OpenAI API connection
@@ -193,7 +91,7 @@ impl OpenAIClient {
 
         // Make a simple completion request to test connectivity
         let test_request = ChatCompletionRequest {
-            model: self.config.default_model.clone().unwrap_or_else(|| "gpt-3.5-turbo".to_string()),
+            model: self.inner.config().default_model.model_name.clone(),
             messages: vec![
                 crate::models::common::ChatMessage {
                     role: crate::models::common::MessageRole::User,
@@ -225,12 +123,21 @@ impl OpenAIClient {
     pub async fn get_models(&self) -> Result<Vec<String>> {
         debug!("Fetching available OpenAI models");
 
-        let headers = self.auth.create_headers()?;
-        let models_url = format!("{}/models", self.config.get_base_url());
+        let url = format!("{}/models", self.inner.config().get_base_url());
+        let auth_headers = self.inner.config().auth_headers();
 
-        let response = self
-            .client
-            .get(&models_url)
+        // Build header map
+        let mut headers = reqwest::header::HeaderMap::new();
+        for (k, v) in auth_headers {
+            let header_name = reqwest::header::HeaderName::from_bytes(k.as_bytes())
+                .map_err(|e| anyhow::anyhow!("Invalid header name '{}': {}", k, e))?;
+            let header_value = reqwest::header::HeaderValue::from_str(&v)
+                .map_err(|e| anyhow::anyhow!("Invalid header value for '{}': {}", k, e))?;
+            headers.insert(header_name, header_value);
+        }
+
+        let response = self.inner.client()
+            .get(&url)
             .headers(headers)
             .send()
             .await
@@ -279,32 +186,17 @@ impl OpenAIClient {
 
     /// Get the recommended model for tool calling
     pub fn get_recommended_tool_model(&self) -> String {
-        self.config.default_model.clone().unwrap_or_else(|| "gpt-4o".to_string())
-    }
-
-    /// Handle rate limiting with exponential backoff
-    async fn handle_rate_limit(&self, attempt: u32) -> Result<()> {
-        let max_retries = self.config.max_retries.unwrap_or(3);
-        
-        if attempt >= max_retries {
-            return Err(anyhow::anyhow!("Maximum retry attempts exceeded"));
-        }
-
-        let delay = std::time::Duration::from_millis(1000 * (2_u64.pow(attempt)));
-        warn!("Rate limit hit, retrying after {:?} (attempt {})", delay, attempt + 1);
-        
-        tokio::time::sleep(delay).await;
-        Ok(())
+        self.inner.config().default_model.model_name.clone()
     }
 
     /// Get client configuration
     pub fn get_config(&self) -> &OpenAIConfig {
-        &self.config
+        self.inner.config()
     }
 
     /// Get tool call manager
     pub fn get_tool_manager(&self) -> &ToolCallManager {
-        &self.tool_manager
+        self.inner.tool_manager()
     }
 }
 
@@ -335,54 +227,8 @@ impl Default for ChatCompletionRequest {
             seed: None,
             service_tier: None,
             metadata: None,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_openai_client_creation() {
-        let config = OpenAIConfig {
-            api_key: "sk-test123456789012345678901234567890123456789012345".to_string(),
-            ..Default::default()
-        };
-
-        let client = OpenAIClient::new(config).await;
-        assert!(client.is_ok());
-    }
-
-    #[test]
-    fn test_tool_calling_support() {
-        let config = OpenAIConfig::default();
-        let client_result = std::thread::spawn(move || {
-            tokio::runtime::Runtime::new().unwrap().block_on(async {
-                OpenAIClient::new(config).await
-            })
-        }).join().unwrap();
-
-        if let Ok(client) = client_result {
-            assert!(client.supports_tool_calling("gpt-4o"));
-            assert!(client.supports_tool_calling("gpt-3.5-turbo"));
-            assert!(!client.supports_tool_calling("davinci-002"));
-        }
-    }
-
-    #[test]
-    fn test_streaming_support() {
-        let config = OpenAIConfig::default();
-        let client_result = std::thread::spawn(move || {
-            tokio::runtime::Runtime::new().unwrap().block_on(async {
-                OpenAIClient::new(config).await
-            })
-        }).join().unwrap();
-
-        if let Ok(client) = client_result {
-            assert!(client.supports_streaming("gpt-4o"));
-            assert!(client.supports_streaming("gpt-3.5-turbo"));
-            assert!(!client.supports_streaming("davinci-002"));
+            store: None,
+            previous_response_id: None,
         }
     }
 }

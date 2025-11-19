@@ -198,6 +198,7 @@ impl AppConfig {
         
         Ok(FallbackConfig {
             enabled: self.fallback.enabled,
+            routing_strategy: crate::features::provider_fallback::models::RoutingStrategy::Balanced,
             provider_priority,
             retry_config: crate::features::provider_fallback::models::RetryConfig {
                 max_attempts: self.fallback.retry_max_attempts,
@@ -213,6 +214,7 @@ impl AppConfig {
             },
             health_check_interval: Duration::from_secs(self.fallback.health_check_interval_seconds),
             provider_timeout: Duration::from_secs(self.fallback.provider_timeout_seconds),
+            intelligent_routing: crate::features::provider_fallback::models::IntelligentRoutingConfig::default(),
         })
     }
 }

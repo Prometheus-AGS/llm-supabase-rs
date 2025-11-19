@@ -203,7 +203,7 @@ impl MistralProvider {
             }
         };
 
-        let supported_models = available_models
+        let supported_models: Vec<_> = available_models
             .into_iter()
             .filter_map(|model_name| {
                 if let Some(model_info) = MistralModel::get_by_name(&model_name) {

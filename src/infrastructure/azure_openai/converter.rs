@@ -111,7 +111,7 @@ impl AzureOpenAIConverter {
     /// Get the finish reason from the response
     pub fn get_finish_reason(&self, response: &ChatCompletionResponse) -> Option<String> {
         response.choices.first()
-            .and_then(|choice| choice.finish_reason.clone())
+            .map(|choice| choice.finish_reason.to_string())
     }
 
     /// Check if the response indicates tool calls are needed

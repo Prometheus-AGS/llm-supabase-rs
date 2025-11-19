@@ -15,7 +15,7 @@ use futures_util::StreamExt;
 
 use crate::models::request::ChatCompletionRequest;
 use crate::models::response::{ChatCompletionResponse, ChatCompletionChunk};
-use crate::infrastructure::common::tools::{ToolCallManager, UnifiedToolCall, ToolCallResult};
+use crate::infrastructure::common::tools::{ToolCallManager, UnifiedToolCall, ToolCallResult, ToolCallConverter};
 
 use super::auth::{MistralAuth, RateLimitInfo, ComplianceStats};
 use super::types::{MistralConfig, MistralModel, MistralApiError};
@@ -39,9 +39,6 @@ pub struct MistralClient {
     
     /// Mistral-specific converter for requests/responses
     converter: Arc<MistralConverter>,
-    
-    /// Rate limiting tracker
-    rate_limit_info: Option<RateLimitInfo>,
     
     /// Performance metrics tracking
     request_count: std::sync::atomic::AtomicU64,
@@ -73,7 +70,7 @@ impl MistralClient {
             .connect_timeout(Duration::from_secs(30)) // Longer for EU connections
             .pool_idle_timeout(Duration::from_secs(60))
             .pool_max_idle_per_host(8) // Conservative connection pooling
-            .user_agent(&config.user_agent.as_ref().unwrap_or(&"LLM-Supabase-RS/1.0 (Mistral)".to_string()))
+            .user_agent(config.user_agent.as_deref().unwrap_or("LLM-Supabase-RS/1.0 (Mistral)"))
             .build()
             .context("Failed to create HTTP client")?;
 
@@ -95,7 +92,6 @@ impl MistralClient {
             auth,
             tool_manager,
             converter,
-            rate_limit_info: None,
             request_count: std::sync::atomic::AtomicU64::new(0),
             total_response_time: std::sync::atomic::AtomicU64::new(0),
         })
@@ -195,10 +191,11 @@ impl MistralClient {
             .await
             .context("Failed to send streaming request to Mistral")?;
 
-        if !response.status().is_success() {
+        let status = response.status();
+        if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
             return Err(anyhow::anyhow!(
-                "Mistral API error {}: {}", response.status(), error_text
+                "Mistral API error {}: {}", status, error_text
             ));
         }
 
@@ -265,7 +262,7 @@ impl MistralClient {
         let models_response: Value = response.json().await
             .context("Failed to parse models response")?;
 
-        let models = models_response.get("data")
+        let models: Vec<String> = models_response.get("data")
             .and_then(|d| d.as_array())
             .map(|arr| {
                 arr.iter()
@@ -345,7 +342,7 @@ impl MistralClient {
 
         // Convert tools if present
         if let Some(tools) = &request.tools {
-            let mistral_tools = self.converter.openai_tools_to_provider(tools)?;
+            let mistral_tools = ToolCallConverter::openai_tools_to_provider(&*self.converter, tools)?;
             mistral_request["tools"] = mistral_tools;
         }
 
@@ -391,17 +388,16 @@ impl MistralClient {
                 .context("Failed to send request to Mistral")?;
 
             if response.status().is_success() {
-                // Update rate limit info from headers
-                self.update_rate_limit_info(response.headers());
                 return Ok(response);
             }
 
             attempt += 1;
             if attempt >= max_retries {
+                let status = response.status();
                 let error_text = response.text().await.unwrap_or_default();
                 return Err(anyhow::anyhow!(
                     "Mistral API error after {} attempts: {} - {}", 
-                    max_retries, response.status(), error_text
+                    max_retries, status, error_text
                 ));
             }
 
@@ -466,16 +462,11 @@ impl MistralClient {
         Ok(processed_stream)
     }
 
-    /// Update rate limit information from response headers
-    fn update_rate_limit_info(&mut self, headers: &reqwest::header::HeaderMap) {
-        self.rate_limit_info = Some(self.auth.parse_rate_limit_headers(headers));
-    }
-
     /// Estimate token usage for request
     fn estimate_request_tokens(&self, request: &ChatCompletionRequest) -> u32 {
         // Rough estimation: 4 characters per token
         let message_tokens: u32 = request.messages.iter().map(|msg| {
-            msg.content.as_ref().map_or(0, |c| (c.len() / 4) as u32)
+            (msg.content.len() / 4) as u32
         }).sum();
 
         let tool_tokens = request.tools.as_ref().map(|tools| {
@@ -493,7 +484,7 @@ impl MistralClient {
     /// Estimate token usage for response
     fn estimate_response_tokens(&self, response: &ChatCompletionResponse) -> u32 {
         response.choices.iter().map(|choice| {
-            choice.message.content.as_ref().map_or(0, |c| (c.len() / 4) as u32)
+            (choice.message.content.len() / 4) as u32
         }).sum()
     }
 }
@@ -546,7 +537,7 @@ mod tests {
             model: "mistral-large-latest".to_string(),
             messages: vec![ChatMessage {
                 role: MessageRole::User,
-                content: Some("Hello".to_string()),
+                content: "Hello".to_string(),
                 ..Default::default()
             }],
             ..Default::default()
@@ -572,7 +563,7 @@ mod tests {
             model: "mistral-large-latest".to_string(),
             messages: vec![ChatMessage {
                 role: MessageRole::User,
-                content: Some("This is a test message".to_string()),
+                content: "This is a test message".to_string(),
                 ..Default::default()
             }],
             ..Default::default()
